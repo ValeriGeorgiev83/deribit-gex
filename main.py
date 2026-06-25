@@ -221,6 +221,7 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
+    # FIXED: Reset max_x to 24 to match perfectly with 3-hour grid intervals
     history_line_chart = ft.LineChart(
         data_series=[
             ft.LineChartData(
@@ -233,7 +234,7 @@ def main(page: ft.Page):
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
         min_x=0,
-        max_x=23,
+        max_x=24,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=260
@@ -280,11 +281,11 @@ def main(page: ft.Page):
                 print(f"Cloud Logging Interrupted: {ex}")
 
             # --- DYNAMIC PERSISTENT TIMESTAMPS GENERATOR ---
-            # Generate labels safely outside of data counts to force axis visible 
+            # FIXED: Loop accurately up to 24 inclusive to bind cleanly with grid coordinates
             x_labels = []
             current_utc_hour = time_now.hour
-            for i in range(0, 24, 3):
-                target_hour = (current_utc_hour - 23 + i) % 24
+            for i in range(0, 25, 3):
+                target_hour = (current_utc_hour - 24 + i) % 24
                 x_labels.append(
                     ft.ChartAxisLabel(
                         value=float(i),
@@ -340,10 +341,11 @@ def main(page: ft.Page):
                         current_step += 50.0
                     history_left_axis.labels = y_labels
 
+                    # FIXED: Offset coordinate layout mapping on a 24 base coordinate index
                     line_points = []
                     for data in filtered_records:
-                        x_pos = 23.0 - data['hours_ago']
-                        if 0 <= x_pos <= 23:
+                        x_pos = 24.0 - data['hours_ago']
+                        if 0 <= x_pos <= 24:
                             line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
                     
                     history_line_chart.data_series[0].data_points = line_points
