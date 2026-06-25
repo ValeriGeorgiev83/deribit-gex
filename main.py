@@ -13,7 +13,7 @@ redis = Redis(
     token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
 )
 REDIS_KEY = "deribit_gex_3d_history"
-MAX_HISTORY_POINTS = 3500
+MAX_HISTORY_POINTS = 2500
 
 def fetch_deribit_gex(currency="BTC"):
     """Fetches and calculates GEX and market flow data from Deribit."""
@@ -239,10 +239,11 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # Clean bottom container tailored to match a 21-hour graph grid structure perfectly
+    # FIXED: Calibrated left padding to 54 and added 24 right margin padding to 
+    # compress the row so it locks directly under the internal grid coordinates.
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(left=44, right=14, top=2)
+        padding=ft.padding.only(left=54, right=24, top=2)
     )
 
     def create_section_header(title):
