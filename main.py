@@ -97,7 +97,6 @@ def fetch_deribit_gex(currency="BTC"):
             min_pain = pain
             max_pain_level = s
 
-    # STRUCTURAL MACRO FLIP CALCULATOR
     df_3d_copy = df_3d.copy()
     df_3d_copy['macro_bucket'] = df_3d_copy['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     macro_grouped = df_3d_copy.groupby('macro_bucket')['gex'].sum().sort_index()
@@ -121,11 +120,9 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # Volume and Inflow tracking logic modifications
     call_vol_3m = call_df_3m['volume'].sum()
     put_vol_3m = put_df_3m['volume'].sum()
     
-    # Calculate directional flows based on net premium positioning
     signed_call_inflow = call_vol_3m if call_gex >= 0 else -call_vol_3m
     signed_put_inflow = put_vol_3m if put_gex >= 0 else -put_vol_3m
     net_flow = signed_call_inflow - signed_put_inflow
@@ -189,7 +186,7 @@ def fmt_inflow(val):
     return f"{sign}{val:.0f}"
 
 def main(page: ft.Page):
-    page.title = "GEX Advanced Terminal"
+    page.title = "Deribit DEX Terminal"
     page.theme_mode = ft.ThemeMode.DARK
     page.scroll = ft.ScrollMode.AUTO
     page.padding = 14
@@ -252,15 +249,12 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}"
             
-            # Dynamic color assignment for Call flow inputs
             inflows_call_txt.value = fmt_inflow(m['call_inflow'])
             inflows_call_txt.color = ft.colors.GREEN_400 if m['call_inflow'] >= 0 else ft.colors.RED_400
             
-            # Dynamic color assignment for Put flow inputs
             outflows_put_txt.value = fmt_inflow(m['put_inflow'])
             outflows_put_txt.color = ft.colors.GREEN_400 if m['put_inflow'] >= 0 else ft.colors.RED_400
 
-            # Net Volume Profile Bias config
             net_flow_txt.value = fmt_gex(m['net_flow'])
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
@@ -322,7 +316,7 @@ def main(page: ft.Page):
 
     page.add(
         ft.Row([
-            ft.Text("⚡ Deribit Hybrid Terminal", size=20, weight=ft.FontWeight.BOLD),
+            ft.Text("⚡ Deribit DEX Terminal", size=20, weight=ft.FontWeight.BOLD),
             ft.IconButton(icon=ft.icons.REFRESH, on_click=refresh_dashboard, icon_color=ft.colors.GREEN_ACCENT)
         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(
@@ -331,14 +325,14 @@ def main(page: ft.Page):
                 padding=12
             )
         ),
-        create_section_header("NET GAMMA PROFILES BY STRIKE (EVEN $1000 INTERVALS | <= 3D)"),
+        create_section_header("NET GAMMA PROFILES BY STRIKE"),
         ft.Card(
             content=ft.Container(
                 padding=ft.padding.only(left=5, right=15, top=15, bottom=15),
                 content=gex_bar_chart
             )
         ),
-        create_section_header("TOTAL GAMMA EXPOSURE (<= 3M)"),
+        create_section_header("TOTAL GAMMA EXPOSURE"),
         ft.Card(
             content=ft.Container(
                 padding=14,
@@ -350,7 +344,7 @@ def main(page: ft.Page):
                 ])
             )
         ),
-        create_section_header("IMPORTANT LEVELS (<= 3D)"),
+        create_section_header("IMPORTANT LEVELS"),
         ft.Card(
             content=ft.Container(
                 padding=14,
@@ -363,7 +357,7 @@ def main(page: ft.Page):
                 ])
             )
         ),
-        create_section_header("INFLOW ANALYSIS (<= 3M)"),
+        create_section_header("INFLOW ANALYSIS"),
         ft.Card(
             content=ft.Container(
                 padding=14,
