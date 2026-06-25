@@ -87,9 +87,8 @@ def fetch_deribit_gex(currency="BTC"):
     put_gex = put_df_3m['gex'].sum()
     net_gex = call_gex + put_gex
     
-    call_gex_3d = df_3d[df_3d['type'] == 'C']['gex'].sum()
-    put_gex_3d = df_3d[df_3d['type'] == 'P']['gex'].sum()
-    net_gex_3d = call_gex_3d + put_gex_3d
+    # Track historical metric on standard 3M expiration range instead of 3D
+    net_gex_3m = net_gex
     
     total_abs_gex = abs(call_gex) + abs(put_gex)
     call_weight_pct = (abs(call_gex) / total_abs_gex * 100) if total_abs_gex > 0 else 50.0
@@ -169,7 +168,7 @@ def fetch_deribit_gex(currency="BTC"):
 
     return {
         "spot": spot_price, "call_gex": call_gex, "put_gex": put_gex, "net_gex": net_gex,
-        "net_gex_3d": net_gex_3d,
+        "net_gex_3m": net_gex_3m,
         "call_weight": call_weight_pct, "max_pain": max_pain_level, "flip": flip_level,
         "breakout": breakout_price, "resistance": resistance_level, "support": support_level,
         "call_inflow": signed_call_inflow, "put_inflow": signed_put_inflow,
@@ -237,11 +236,9 @@ def main(page: ft.Page):
         ],
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
-        # Lock chart spacing directly to 24 hourly columns (0 to 23)
         min_x=0,
         max_x=23,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        # Draw exactly 23 vertical lines dividing the chart into 24 distinct hourly columns
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=1),
         animate=True, interactive=True, height=260
     )
@@ -278,7 +275,7 @@ def main(page: ft.Page):
             try:
                 snapshot = {
                     "timestamp": datetime.now(timezone.utc).strftime("%m-%d %H:%M"),
-                    "gex": round(m['net_gex_3d'], 2)
+                    "gex": round(m['net_gex_3m'], 2)  # Log total 3M exposure instead of 3D
                 }
                 redis.rpush(REDIS_KEY, json.dumps(snapshot))
                 redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
@@ -297,14 +294,12 @@ def main(page: ft.Page):
                             data = json.loads(record)
                             rec_time = datetime.strptime(f"{time_now.year}-{data['timestamp']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
                             
-                            # Filter window to 24-hour trailing boundaries
                             hours_diff = (time_now - rec_time).total_seconds() / 3600.0
                             if hours_diff <= 24.0:
                                 filtered_records.append(data)
                         except Exception:
                             continue
 
-                    # Fallback Engine: Keep last 24 points if 24h metrics are still building up
                     if len(filtered_records) < 2:
                         for record in raw_records[-24:]:
                             filtered_records.append(json.loads(record))
@@ -314,14 +309,12 @@ def main(page: ft.Page):
                     max_m = max(gex_in_millions) if gex_in_millions else 50.0
                     min_m = min(gex_in_millions) if gex_in_millions else -50.0
                     
-                    # Compute uniform symmetric boundaries in step increments of 50M
                     largest_abs = max(abs(max_m), abs(min_m), 50.0)
                     fixed_bound = math.ceil(largest_abs / 50.0) * 50.0
                     
                     history_line_chart.min_y = -fixed_bound * 1000000.0
                     history_line_chart.max_y = fixed_bound * 1000000.0
 
-                    # Generate fixed horizontal line labels at intervals of 50M
                     y_labels = []
                     current_step = -fixed_bound
                     while current_step <= fixed_bound:
@@ -336,26 +329,24 @@ def main(page: ft.Page):
                         current_step += 50.0
                     history_left_axis.labels = y_labels
 
-                    # Map incoming data snapshots evenly across the 0-23 coordinate space
+                    # --- ALIGN CHRONOLOGICAL DIRECTION FROM LEFT TO RIGHT ---
                     line_points = []
                     total_records = len(filtered_records)
                     
                     for idx, data in enumerate(filtered_records):
-                        # Calculate smooth fractional position from index 0 to 23
+                        # Map older values on the left side (idx=0 -> x=0) and newest values on the right (idx=last -> x=23)
                         x_pos = (idx / (total_records - 1)) * 23 if total_records > 1 else idx
                         line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
                     
                     history_line_chart.data_series[0].data_points = line_points
 
-                    # --- STRIP LABELS & FORCE STATIC 3-HOUR CLOCK SYSTEM ---
-                    # Instead of counting items, map the horizontal labels to static clock steps
+                    # --- STATIC 3-HOUR CLOCK AXIS LABELS MATCHING CHRONOLOGY ---
                     x_labels = []
                     current_utc_hour = time_now.hour
                     
-                    # Generate round 3-hour markers going back 24 hours
+                    # Compute timestamps from 24 hours ago (left) moving sequentially up to current hour (far right)
                     for i in range(0, 24, 3):
                         target_hour = (current_utc_hour - (24 - i)) % 24
-                        # Position on the 0-23 grid coordinate system
                         x_coord = (i / 24) * 23
                         
                         x_labels.append(
@@ -397,7 +388,8 @@ def main(page: ft.Page):
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
-        create_section_header("ROLLING 24-HOUR NET GEX HISTORICAL TREND (<=3D EXP)"),
+        # Updated chart section title to 'Net Gamma Exposure (24 Hrs)'
+        create_section_header("Net Gamma Exposure (24 Hrs)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=20, top=15, bottom=20), content=history_line_chart)),
         
         create_section_header("NET GAMMA PROFILES BY STRIKE"),
