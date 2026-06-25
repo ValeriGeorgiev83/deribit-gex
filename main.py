@@ -10,11 +10,11 @@ from datetime import datetime, timezone, timedelta
 from upstash_redis import Redis
 redis = Redis(
     url="https://large-ghost-131173.upstash.io", 
-    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
+    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0TzlhOWJmZGM1MTg5OWViZDIxMw"
 )
 REDIS_KEY = "deribit_gex_3d_history"
 REDIS_FLOW_KEY = "deribit_flow_24h_history"
-MAX_HISTORY_POINTS = 3500 # Kept fully at your 7-day target bounds
+MAX_HISTORY_POINTS = 3500
 
 def fetch_deribit_gex(currency="BTC"):
     """Fetches and calculates GEX and market flow data from Deribit."""
@@ -133,10 +133,9 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # --- CLOUD-STORAGE ACCUMULATED TAPE ORDER FLOW ENGINE ---
-    current_refresh_call_flow = 0.0
-    current_refresh_put_flow = 0.0
-    
+    # --- METHOD B: OPTION TAPE DIRECTIONAL ENGINE FIAT VALUED ---
+    net_call_fiat_flow = 0.0
+    net_put_fiat_flow = 0.0
     try:
         trades_url = f"https://www.deribit.com/api/v2/public/get_last_trades_by_currency?currency={currency}&kind=option&count=1000"
         trades_res = requests.get(trades_url).json()
@@ -146,22 +145,25 @@ def fetch_deribit_gex(currency="BTC"):
             ins_name = trade.get('instrument_name', '')
             direction = trade.get('direction', 'buy')
             amount = float(trade.get('amount', 0))
+            trade_index_price = float(trade.get('index_price', spot_price))
+            
+            # Formulating raw fiat cash positioning profile (Contracts * Strike Underlying Price Baseline)
+            fiat_notional_value = amount * trade_index_price
             
             if ins_name.endswith('-C'):
-                if direction == 'buy': current_refresh_call_flow += amount
-                else: current_refresh_call_flow -= amount
+                if direction == 'buy': net_call_fiat_flow += fiat_notional_value
+                else: net_call_fiat_flow -= fiat_notional_value
             elif ins_name.endswith('-P'):
-                if direction == 'buy': current_refresh_put_flow -= amount
-                else: current_refresh_put_flow += amount
+                if direction == 'buy': net_put_fiat_flow -= fiat_notional_value
+                else: net_put_fiat_flow += fiat_notional_value
     except Exception as ex:
         print(f"Option Trade Fetch Interrupted: {ex}")
 
     time_now = datetime.now(timezone.utc)
     current_ts = time_now.strftime("%m-%d %H:%M")
 
-    # --- EXTRA ACTION: TIME-BASED HISTORICAL LOG CLEAN-UP ENGINE ---
+    # --- TIME-BASED HISTORICAL LOG CLEAN-UP ENGINE ---
     try:
-        # Check if the minute has already been logged to prevent layout duplication
         last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
         is_duplicate = False
         if last_logged_element:
@@ -172,12 +174,11 @@ def fetch_deribit_gex(currency="BTC"):
         if not is_duplicate:
             flow_snapshot = {
                 "timestamp": current_ts,
-                "call_flow": round(current_refresh_call_flow, 2),
-                "put_flow": round(current_refresh_put_flow, 2)
+                "call_flow": round(net_call_fiat_flow, 2),
+                "put_flow": round(net_put_fiat_flow, 2)
             }
             redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
 
-        # Evict records older than 24 hours to protect free-tier limits
         all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
         valid_flow_records = []
         records_to_remove_count = 0
@@ -193,7 +194,6 @@ def fetch_deribit_gex(currency="BTC"):
             else:
                 records_to_remove_count += 1
 
-        # Pop expired nodes from the left edge of your Redis array list
         if records_to_remove_count > 0:
             redis.ltrim(REDIS_FLOW_KEY, records_to_remove_count, -1)
 
@@ -201,7 +201,6 @@ def fetch_deribit_gex(currency="BTC"):
         print(f"Cloud Flow Lifecycle Eviction Guard Triggered: {ex}")
         valid_flow_records = []
 
-    # Calculate final rolling 24h volumes from our validated memory lists
     total_accumulated_call_flow = 0.0
     total_accumulated_put_flow = 0.0
 
@@ -210,8 +209,8 @@ def fetch_deribit_gex(currency="BTC"):
             total_accumulated_call_flow += f_data["call_flow"]
             total_accumulated_put_flow += f_data["put_flow"]
     else:
-        total_accumulated_call_flow = current_refresh_call_flow
-        total_accumulated_put_flow = current_refresh_put_flow
+        total_accumulated_call_flow = net_call_fiat_flow
+        total_accumulated_put_flow = net_put_fiat_flow
 
     net_flow_bias = total_accumulated_call_flow + total_accumulated_put_flow
     call_oi_3m = call_df_3m['oi'].sum()
@@ -252,9 +251,11 @@ def fmt_gex(val):
     abs_val = abs(val)
     return f"{sign}{abs_val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{abs_val:.1f}"
 
-def fmt_order_flow(val):
+# REVISED: Formats absolute fiat cash flow directly into Million Dollar strings ($M)
+def fmt_fiat_order_flow(val):
     sign = "+" if val >= 0 else ""
-    return f"{sign}{val:,.1f}"
+    millions_val = val / 1000000.0
+    return f"{sign}{millions_val:,.1f}M"
 
 def main(page: ft.Page):
     page.title = "Deribit GEX Terminal"
@@ -266,7 +267,8 @@ def main(page: ft.Page):
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
-    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=5)
+    # Increased labels_size to natively house timeline strings securely inside the canvas margins
+    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=20)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
@@ -279,9 +281,9 @@ def main(page: ft.Page):
     res_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_300)
     sup_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PINK_400)
     
-    inflows_call_txt = ft.Text("0.0", size=18, weight=ft.FontWeight.W_600)
-    outflows_put_txt = ft.Text("0.0", size=18, weight=ft.FontWeight.W_600)
-    net_flow_txt = ft.Text("0.0", size=18, weight=ft.FontWeight.W_600)
+    inflows_call_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
+    outflows_put_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
+    net_flow_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
     cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
 
     gex_bar_chart = ft.BarChart(bar_groups=[], bottom_axis=net_axis, 
@@ -314,11 +316,6 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    native_timeline_container = ft.Container(
-        content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(left=54, right=24, top=2)
-    )
-
     def create_section_header(title):
         return ft.Container(content=ft.Text(title, size=13, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_500), margin=ft.margin.only(top=15, bottom=5))
 
@@ -340,13 +337,14 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}"
             
-            inflows_call_txt.value = fmt_order_flow(m['call_inflow'])
+            # Rendering values using formatted Dollar strings
+            inflows_call_txt.value = fmt_fiat_order_flow(m['call_inflow'])
             inflows_call_txt.color = ft.colors.GREEN_400 if m['call_inflow'] >= 0 else ft.colors.RED_400
             
-            outflows_put_txt.value = fmt_order_flow(m['put_inflow'])
+            outflows_put_txt.value = fmt_fiat_order_flow(m['put_inflow'])
             outflows_put_txt.color = ft.colors.GREEN_400 if m['put_inflow'] >= 0 else ft.colors.RED_400
             
-            net_flow_txt.value = fmt_order_flow(m['net_flow'])
+            net_flow_txt.value = fmt_fiat_order_flow(m['net_flow'])
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
@@ -371,15 +369,18 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- GENERATE STEP LABELS ACROSS 21 HOURS ---
+            # --- REVISED: NATIVE CANVAS-LOCKED BOTTOM TIMELINE AXIS ---
             current_utc_hour = time_now.hour
-            row_elements = []
+            x_axis_labels = []
             for step in range(0, 22, 3):
                 calculated_hour = (current_utc_hour - 21 + step) % 24
-                row_elements.append(
-                    ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
+                x_axis_labels.append(
+                    ft.ChartAxisLabel(
+                        value=float(step), # Binds coordinate directly onto grid interval vectors natively
+                        label=ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
+                    )
                 )
-            native_timeline_container.content.controls = row_elements
+            history_bottom_axis.labels = x_axis_labels
 
             # --- POPULATE ROLLING HISTORICAL TREND ---
             try:
@@ -475,10 +476,7 @@ def main(page: ft.Page):
         ft.Card(
             content=ft.Container(
                 padding=ft.padding.only(left=5, right=20, top=15, bottom=15), 
-                content=ft.Column([
-                    history_line_chart,
-                    native_timeline_container
-                ], spacing=0)
+                content=history_line_chart # Removed native wrapper row to utilize internal chart canvas labeling cleanly
             )
         ),
         
@@ -491,7 +489,7 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Net Call Order Flow (BTC Options)", inflows_call_txt), ui_row_item("Net Put Order Flow (BTC Options)", outflows_put_txt), ui_row_item("Net Premium Bias", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Net Call Order Flow ($ Value)", inflows_call_txt), ui_row_item("Net Put Order Flow ($ Value)", outflows_put_txt), ui_row_item("Net Premium Bias", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
     )
     refresh_dashboard()
 
