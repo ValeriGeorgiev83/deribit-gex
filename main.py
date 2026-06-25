@@ -3,7 +3,50 @@ import requests
 import pandas as pd
 import os
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+# --- BINANCE DATA AGGREGATE CVD CALCULATOR ---
+def fetch_binance_cvd_change(symbol="BTCUSDT", is_futures=False):
+    """
+    Approximates the historical Aggregate CVD changes over the last 15m, 1h, and 4h
+    by analyzing taker buy vs taker sell aggregate volume distributions.
+    """
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    
+    # Define Lookback windows in milliseconds
+    ms_15m = 15 * 60 * 1000
+    ms_1h = 60 * 60 * 1000
+    ms_4h = 4 * 60 * 60 * 1000
+    
+    base_url = "https://fapi.binance.com" if is_futures else "https://api.binance.com"
+    endpoint = f"{base_url}/fapi/v1/aggTrades" if is_futures else f"{base_url}/api/v3/aggTrades"
+    
+    intervals = {"15m": ms_15m, "1h": ms_1h, "4h": ms_4h}
+    results = {"15m": 0.0, "1h": 0.0, "4h": 0.0}
+    
+    for key, delta_ms in intervals.items():
+        try:
+            # Query the aggregate trade list for the requested lookback slice
+            start_time = now_ms - delta_ms
+            params = {"symbol": symbol, "startTime": start_time, "limit": 1000}
+            res = requests.get(endpoint, params=params).json()
+            
+            cvd_sum = 0.0
+            if isinstance(res, list):
+                for trade in res:
+                    qty = float(trade.get('q', 0))
+                    # m = True means buyer is market maker (taker sell -> negative)
+                    # m = False means seller is market maker (taker buy -> positive)
+                    is_buyer_mm = trade.get('m', True)
+                    if not is_buyer_mm:
+                        cvd_sum += qty
+                    else:
+                        cvd_sum -= qty
+            results[key] = cvd_sum
+        except Exception:
+            results[key] = 0.0
+            
+    return results
 
 def fetch_deribit_gex(currency="BTC"):
     try:
@@ -97,7 +140,6 @@ def fetch_deribit_gex(currency="BTC"):
             min_pain = pain
             max_pain_level = s
 
-    # STRUCTURAL MACRO FLIP CALCULATOR
     df_3d_copy = df_3d.copy()
     df_3d_copy['macro_bucket'] = df_3d_copy['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     macro_grouped = df_3d_copy.groupby('macro_bucket')['gex'].sum().sort_index()
@@ -121,11 +163,9 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # Volume and Inflow tracking logic modifications
     call_vol_3m = call_df_3m['volume'].sum()
     put_vol_3m = put_df_3m['volume'].sum()
     
-    # Calculate directional flows based on net premium positioning
     signed_call_inflow = call_vol_3m if call_gex >= 0 else -call_vol_3m
     signed_put_inflow = put_vol_3m if put_gex >= 0 else -put_vol_3m
     net_flow = signed_call_inflow - signed_put_inflow
@@ -156,6 +196,10 @@ def fetch_deribit_gex(currency="BTC"):
             "gex": gex_val
         })
 
+    # Pull Binance Spot & Futures CVD Metrics
+    cvd_spot_data = fetch_binance_cvd_change("BTCUSDT", is_futures=False)
+    cvd_futures_data = fetch_binance_cvd_change("BTCUSDT", is_futures=True)
+
     return {
         "spot": spot_price,
         "call_gex": call_gex,
@@ -171,7 +215,9 @@ def fetch_deribit_gex(currency="BTC"):
         "put_inflow": signed_put_inflow,
         "net_flow": net_flow,
         "cp_ratio": cp_ratio,
-        "chart_data": chart_matrix
+        "chart_data": chart_matrix,
+        "cvd_spot": cvd_spot_data,
+        "cvd_futures": cvd_futures_data
     }
 
 def fmt_gex(val):
@@ -187,6 +233,10 @@ def fmt_inflow(val):
     if abs_val >= 1000:
         return f"{sign}{val/1000:.1f}k"
     return f"{sign}{val:.0f}"
+
+def fmt_cvd(val):
+    sign = "+" if val >= 0 else ""
+    return f"{sign}{val:.2f}"
 
 def main(page: ft.Page):
     page.title = "GEX Advanced Terminal"
@@ -210,6 +260,15 @@ def main(page: ft.Page):
     outflows_put_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     net_flow_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
+
+    # --- BINANCE DATA LABELS STRUCTURE ---
+    cvd_s_15m = ft.Text("0.00", weight=ft.FontWeight.W_600, size=14)
+    cvd_s_1h = ft.Text("0.00", weight=ft.FontWeight.W_600, size=14)
+    cvd_s_4h = ft.Text("0.00", weight=ft.FontWeight.W_600, size=14)
+
+    cvd_f_15m = ft.Text("0.00", weight=ft.FontWeight.W_600, size=14)
+    cvd_f_1h = ft.Text("0.00", weight=ft.FontWeight.W_600, size=14)
+    cvd_f_4h = ft.Text("0.00", weight=ft.FontWeight.W_600, size=14)
 
     gex_bar_chart = ft.BarChart(
         bar_groups=[],
@@ -252,22 +311,38 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}"
             
-            # Dynamic color assignment for Call flow inputs
             inflows_call_txt.value = fmt_inflow(m['call_inflow'])
             inflows_call_txt.color = ft.colors.GREEN_400 if m['call_inflow'] >= 0 else ft.colors.RED_400
             
-            # Dynamic color assignment for Put flow inputs
             outflows_put_txt.value = fmt_inflow(m['put_inflow'])
             outflows_put_txt.color = ft.colors.GREEN_400 if m['put_inflow'] >= 0 else ft.colors.RED_400
 
-            # Net Volume Profile Bias config
             net_flow_txt.value = fmt_gex(m['net_flow'])
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
+            # --- UPDATE CVD SPOT LABELS AND COLORS ---
+            cvd_s_15m.value = fmt_cvd(m['cvd_spot']['15m'])
+            cvd_s_15m.color = ft.colors.GREEN_400 if m['cvd_spot']['15m'] >= 0 else ft.colors.RED_400
+            
+            cvd_s_1h.value = fmt_cvd(m['cvd_spot']['1h'])
+            cvd_s_1h.color = ft.colors.GREEN_400 if m['cvd_spot']['1h'] >= 0 else ft.colors.RED_400
+            
+            cvd_s_4h.value = fmt_cvd(m['cvd_spot']['4h'])
+            cvd_s_4h.color = ft.colors.GREEN_400 if m['cvd_spot']['4h'] >= 0 else ft.colors.RED_400
+
+            # --- UPDATE CVD FUTURES LABELS AND COLORS ---
+            cvd_f_15m.value = fmt_cvd(m['cvd_futures']['15m'])
+            cvd_f_15m.color = ft.colors.GREEN_400 if m['cvd_futures']['15m'] >= 0 else ft.colors.RED_400
+            
+            cvd_f_1h.value = fmt_cvd(m['cvd_futures']['1h'])
+            cvd_f_1h.color = ft.colors.GREEN_400 if m['cvd_futures']['1h'] >= 0 else ft.colors.RED_400
+            
+            cvd_f_4h.value = fmt_cvd(m['cvd_futures']['4h'])
+            cvd_f_4h.color = ft.colors.GREEN_400 if m['cvd_futures']['4h'] >= 0 else ft.colors.RED_400
+
             new_groups = []
             new_labels = []
-            
             min_dist = float('inf')
             spot_index_target = -1
             
@@ -363,6 +438,47 @@ def main(page: ft.Page):
                 ])
             )
         ),
+        
+        # --- NEW SECTION: BINANCE DATA (AGGREGATE CVD MATRIX) ---
+        create_section_header("BINANCE DATA"),
+        ft.Card(
+            content=ft.Container(
+                padding=14,
+                content=ft.Column([
+                    # Interval Header Row
+                    ft.Row([
+                        ft.Text("Interval", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_400),
+                        ft.Row([
+                            ft.Container(content=ft.Text("15min", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_400), width=80, alignment=ft.alignment.center),
+                            ft.Container(content=ft.Text("1hr", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_400), width=80, alignment=ft.alignment.center),
+                            ft.Container(content=ft.Text("4hr", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_400), width=80, alignment=ft.alignment.center),
+                        ], spacing=10)
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    ft.Divider(color=ft.colors.GREY_800, height=10),
+                    
+                    # CVD Spot Row
+                    ft.Row([
+                        ft.Text("CVD Spot", size=14, weight=ft.FontWeight.W_500, color=ft.colors.GREY_100),
+                        ft.Row([
+                            ft.Container(content=cvd_s_15m, width=80, alignment=ft.alignment.center),
+                            ft.Container(content=cvd_s_1h, width=80, alignment=ft.alignment.center),
+                            ft.Container(content=cvd_s_4h, width=80, alignment=ft.alignment.center),
+                        ], spacing=10)
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    
+                    # CVD Futures Row
+                    ft.Row([
+                        ft.Text("CVD Futures", size=14, weight=ft.FontWeight.W_500, color=ft.colors.GREY_100),
+                        ft.Row([
+                            ft.Container(content=cvd_f_15m, width=80, alignment=ft.alignment.center),
+                            ft.Container(content=cvd_f_1h, width=80, alignment=ft.alignment.center),
+                            ft.Container(content=cvd_f_4h, width=80, alignment=ft.alignment.center),
+                        ], spacing=10)
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ])
+            )
+        ),
+        
         create_section_header("INFLOW ANALYSIS (<= 3M)"),
         ft.Card(
             content=ft.Container(
