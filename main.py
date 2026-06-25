@@ -13,7 +13,7 @@ redis = Redis(
     token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
 )
 REDIS_KEY = "deribit_gex_3d_history"
-MAX_HISTORY_POINTS = 3500  # Automatically clips ancient data
+MAX_HISTORY_POINTS = 2500  # Holds over a week of data sampled every 5 minutes
 
 def fetch_deribit_gex(currency="BTC"):
     """Fetches and calculates GEX and market flow data from Deribit."""
@@ -170,7 +170,7 @@ def fetch_deribit_gex(currency="BTC"):
 
     return {
         "spot": spot_price, "call_gex": call_gex, "put_gex": put_gex, "net_gex": net_gex,
-        "net_gex_3d": net_gex_3d, # Exposed short term delta
+        "net_gex_3d": net_gex_3d,
         "call_weight": call_weight_pct, "max_pain": max_pain_level, "flip": flip_level,
         "breakout": breakout_price, "resistance": resistance_level, "support": support_level,
         "call_inflow": signed_call_inflow, "put_inflow": signed_put_inflow,
@@ -195,8 +195,6 @@ def main(page: ft.Page):
 
     net_axis = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
-    
-    # Historical Curve Axis Setup
     history_axis = ft.ChartAxis(labels=[], labels_size=24)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
@@ -226,7 +224,6 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # NEW: Historical Short-Term Curve Widget (<=3d Expirations)
     history_line_chart = ft.LineChart(
         data_series=[
             ft.LineChartData(
@@ -234,7 +231,7 @@ def main(page: ft.Page):
                 color=ft.colors.CYAN_400,
                 stroke_width=2.5,
                 curved=True,
-                point_shape=ft.ChartPointShape.CIRCLE,
+                point_shape=ft.ChartCirclePoint(radius=4),
                 below_line_fill_color=ft.colors.with_opacity(0.05, ft.colors.CYAN_400),
             )
         ],
@@ -278,9 +275,7 @@ def main(page: ft.Page):
                     "timestamp": datetime.now(timezone.utc).strftime("%m-%d %H:%M"),
                     "gex": round(m['net_gex_3d'], 2)
                 }
-                # Log to tail of list
                 redis.rpush(REDIS_KEY, json.dumps(snapshot))
-                # Prune list down to ensure we stay perfectly clean and space-efficient
                 redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
@@ -291,7 +286,7 @@ def main(page: ft.Page):
                 if raw_records:
                     line_spots = []
                     hist_labels = []
-                    step = max(1, len(raw_records) // 6) # Space labels out naturally
+                    step = max(1, len(raw_records) // 6)
                     
                     for idx, record in enumerate(raw_records):
                         data = json.loads(record)
