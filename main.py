@@ -192,7 +192,6 @@ def main(page: ft.Page):
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
-    # Keeping timeline axis empty so the native row handles presentation completely
     history_bottom_axis = ft.ChartAxis(labels=[], labels_size=5)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
@@ -234,13 +233,13 @@ def main(page: ft.Page):
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
         min_x=0,
-        max_x=24,
+        max_x=21,  # Set maximum range to 21 hours
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=240
     )
 
-    # Immutable native Flet row placeholder layout directly aligned beneath chart canvas grid
+    # Clean bottom container tailored to match a 21-hour graph grid structure perfectly
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         padding=ft.padding.only(left=44, right=14, top=2)
@@ -286,17 +285,17 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- IMMUNE TIMELINE ROW REFRESH ---
+            # --- GENERATE STEP LABELS ACROSS 21 HOURS ---
             current_utc_hour = time_now.hour
             row_elements = []
-            for step in range(0, 25, 3):
-                calculated_hour = (current_utc_hour - 24 + step) % 24
+            for step in range(0, 22, 3):  # 8 cleanly spaced markers from -21h up to 0h
+                calculated_hour = (current_utc_hour - 21 + step) % 24
                 row_elements.append(
                     ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
                 )
             native_timeline_container.content.controls = row_elements
 
-            # --- POPULATE ROLLING 24-HOUR HISTORICAL TREND ---
+            # --- POPULATE ROLLING HISTORICAL TREND ---
             try:
                 raw_records = redis.lrange(REDIS_KEY, 0, -1)
                 if raw_records:
@@ -310,7 +309,7 @@ def main(page: ft.Page):
                                 rec_time = rec_time.replace(year=time_now.year - 1)
                                 
                             hours_diff = (time_now - rec_time).total_seconds() / 3600.0
-                            if hours_diff <= 24.0:
+                            if hours_diff <= 21.0:  # Bound processing filter logic inside 21 hours
                                 data['epoch'] = rec_time.timestamp()
                                 data['hours_ago'] = hours_diff
                                 filtered_records.append(data)
@@ -345,8 +344,8 @@ def main(page: ft.Page):
 
                     line_points = []
                     for data in filtered_records:
-                        x_pos = 24.0 - data['hours_ago']
-                        if 0 <= x_pos <= 24:
+                        x_pos = 21.0 - data['hours_ago']
+                        if 0 <= x_pos <= 21:
                             line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
                     
                     history_line_chart.data_series[0].data_points = line_points
@@ -381,13 +380,13 @@ def main(page: ft.Page):
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
-        create_section_header("NET GAMMA EXPOSURE (24 HRS)"),
+        create_section_header("NET GAMMA EXPOSURE (21 HRS)"),
         ft.Card(
             content=ft.Container(
                 padding=ft.padding.only(left=5, right=20, top=15, bottom=15), 
                 content=ft.Column([
                     history_line_chart,
-                    native_timeline_container  # Placed outside the chart canvas layout tree
+                    native_timeline_container
                 ], spacing=0)
             )
         ),
