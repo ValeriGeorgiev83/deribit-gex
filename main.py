@@ -195,9 +195,7 @@ def main(page: ft.Page):
     net_axis = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
-    # Left Vertical Axis configuration for historical trend
-    history_left_axis = ft.ChartAxis(labels=[], labels_size=40)
-    # Bottom Horizontal Axis configuration for historical trend
+    history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
     history_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
@@ -283,7 +281,7 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- POPULATE ROLLING 60-MIN HISTORICAL TREND ---
+            # --- POPULATE ROLLING 24-HOUR HISTORICAL TREND ---
             try:
                 raw_records = redis.lrange(REDIS_KEY, 0, -1)
                 if raw_records:
@@ -296,60 +294,76 @@ def main(page: ft.Page):
                             data = json.loads(record)
                             rec_time = datetime.strptime(f"{time_now.year}-{data['timestamp']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
                             
-                            # Filter window to exact 60-minute trailing boundary
-                            minutes_diff = (time_now - rec_time).total_seconds() / 60.0
-                            if minutes_diff <= 60.0:
+                            # Filter window to 24-hour trailing boundaries
+                            hours_diff = (time_now - rec_time).total_seconds() / 3600.0
+                            if hours_diff <= 24.0:
                                 filtered_records.append(data)
                         except Exception:
                             continue
 
-                    # Fallback Engine: Keep last 5 points if cron is freshly spinning up
+                    # Fallback Engine: Keep last 15 points if 24h metrics are still loading
                     if len(filtered_records) < 2:
-                        for record in raw_records[-5:]:
+                        for record in raw_records[-15:]:
                             filtered_records.append(json.loads(record))
 
-                    # Parse values out to define clear absolute boundaries for the y-axis
-                    gex_values = [data['gex'] for data in filtered_records]
-                    max_val = max(gex_values) if gex_values else 1000.0
-                    min_val = min(gex_values) if gex_values else -1000.0
+                    # Convert stored base points to Millions (M) metrics
+                    gex_in_millions = [data['gex'] / 1000000.0 for data in filtered_records]
+                    max_m = max(gex_in_millions) if gex_in_millions else 50.0
+                    min_m = min(gex_in_millions) if gex_in_millions else -50.0
                     
-                    # Force boundaries to span across the zero baseline symmetrically
-                    abs_bound = max(abs(max_val), abs(min_val), 100.0) * 1.15
-                    history_line_chart.min_y = -abs_bound
-                    history_line_chart.max_y = abs_bound
+                    # Dynamically compute uniform symmetric boundaries step increments of 50M
+                    largest_abs = max(abs(max_m), abs(min_m), 50.0)
+                    fixed_bound = math.ceil(largest_abs / 50.0) * 50.0
+                    
+                    # Apply raw un-divided bounds directly to chart constraints
+                    history_line_chart.min_y = -fixed_bound * 1000000.0
+                    history_line_chart.max_y = fixed_bound * 1000000.0
 
-                    # Formulate structured left Y-axis divisions labeled in 'k' notation
+                    # Generate fixed horizontal line labels at intervals of 50M
                     y_labels = []
-                    divisions = [-abs_bound, -abs_bound * 0.5, 0.0, abs_bound * 0.5, abs_bound]
-                    for div in divisions:
+                    current_step = -fixed_bound
+                    while current_step <= fixed_bound:
+                        sign = "+" if current_step > 0 else ""
+                        label_text = f"{sign}{int(current_step)}M" if current_step != 0 else "0"
                         y_labels.append(
                             ft.ChartAxisLabel(
-                                value=div,
-                                label=ft.Text(f"{div/1000:.1f}k" if div != 0 else "0", size=10, color=ft.colors.GREY_400)
+                                value=current_step * 1000000.0,
+                                label=ft.Text(label_text, size=10, color=ft.colors.GREY_400)
                             )
                         )
+                        current_step += 50.0
                     history_left_axis.labels = y_labels
 
-                    # Construct precise start/stop anchors for the bottom X-axis
+                    # Construct 24 distinct grid columns and display 3-hour round clock labels
                     x_labels = []
+                    total_points = len(filtered_records)
+                    history_line_chart.horizontal_grid_lines = ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5)
+                    
+                    # Force Flet grid lines count directly matching the 24 hour blocks layout
+                    history_line_chart.vertical_grid_lines = ft.ChartGridLines(
+                        color=ft.colors.GREY_800, 
+                        width=0.5, 
+                        interval=max(1.0, total_points / 24.0)
+                    )
+
                     for idx, data in enumerate(filtered_records):
                         line_points.append(ft.LineChartDataPoint(x=idx, y=data['gex']))
                         
-                        # Only draw textual labels at the exact first and last data frame indices
-                        if idx == 0:
-                            x_labels.append(
-                                ft.ChartAxisLabel(
-                                    value=idx,
-                                    label=ft.Text(f"Start: {data['timestamp'].split(' ')[1]}", size=10, color=ft.colors.BLUE_300, weight=ft.FontWeight.BOLD)
+                        # Extract the hour token from string sequence (e.g. "14:05" -> 14)
+                        time_str = data['timestamp'].split(' ')[1]
+                        hour_val = int(time_str.split(':')[0])
+                        minute_val = int(time_str.split(':')[1])
+                        
+                        # Label intervals aligned to nearest 3-hour round marks (0, 3, 6, 9, 12, 15, 18, 21)
+                        if hour_val % 3 == 0 and minute_val < 6:
+                            # Avoid duplicates clogging closely packed lines
+                            if not any(lbl.value >= idx - (total_points/12) and lbl.value <= idx + (total_points/12) for lbl in x_labels):
+                                x_labels.append(
+                                    ft.ChartAxisLabel(
+                                        value=idx,
+                                        label=ft.Text(f"{hour_val}", size=10, color=ft.colors.GREY_500, weight=ft.FontWeight.W_500)
+                                    )
                                 )
-                            )
-                        elif idx == len(filtered_records) - 1:
-                            x_labels.append(
-                                ft.ChartAxisLabel(
-                                    value=idx,
-                                    label=ft.Text(f"Latest: {data['timestamp'].split(' ')[1]}", size=10, color=ft.colors.CYAN_300, weight=ft.FontWeight.BOLD)
-                                )
-                            )
                             
                     history_line_chart.data_series[0].data_points = line_points
                     history_bottom_axis.labels = x_labels
@@ -384,7 +398,7 @@ def main(page: ft.Page):
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
-        create_section_header("ROLLING 60-MIN GEX HISTORICAL TREND (<=3D EXP)"),
+        create_section_header("ROLLING 24-HOUR NET GEX HISTORICAL TREND (<=3D EXP)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=20, top=15, bottom=20), content=history_line_chart)),
         
         create_section_header("NET GAMMA PROFILES BY STRIKE"),
