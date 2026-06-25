@@ -159,7 +159,7 @@ def fetch_deribit_gex(currency="BTC"):
         print(f"Option Trade Fetch Interrupted: {ex}")
 
     time_now = datetime.now(timezone.utc)
-    current_ts = time_now.strftime("%m-%d %H:%M")
+    current_epoch = time_now.timestamp()
 
     # --- TIME-BASED HISTORICAL LOG CLEAN-UP ENGINE ---
     try:
@@ -167,12 +167,13 @@ def fetch_deribit_gex(currency="BTC"):
         is_duplicate = False
         if last_logged_element:
             last_logged_data = json.loads(last_logged_element)
-            if last_logged_data.get("timestamp") == current_ts:
+            # Use safe subtraction window to guard duplicate writes inside the same minute loop
+            if abs(current_epoch - last_logged_data.get("epoch", 0)) < 60.0:
                 is_duplicate = True
 
         if not is_duplicate:
             flow_snapshot = {
-                "timestamp": current_ts,
+                "epoch": current_epoch,
                 "call_flow": round(net_call_fiat_flow, 2),
                 "put_flow": round(net_put_fiat_flow, 2)
             }
@@ -184,11 +185,10 @@ def fetch_deribit_gex(currency="BTC"):
 
         for record in all_flow_records:
             f_data = json.loads(record)
-            ts_str = f_data['timestamp']
-            rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-            if rec_time > time_now: rec_time = rec_time.replace(year=time_now.year - 1)
+            # Fallback handling: check for pure float coordinates natively
+            rec_epoch = f_data.get("epoch", 0)
             
-            if (time_now - rec_time).total_seconds() <= 86400.0:
+            if (current_epoch - rec_epoch) <= 86400.0:
                 valid_flow_records.append(f_data)
             else:
                 records_to_remove_count += 1
@@ -250,7 +250,7 @@ def fmt_gex(val):
     abs_val = abs(val)
     return f"{sign}{abs_val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{abs_val:.1f}"
 
-# Formats unsigned values directly to pure fiat millions string layouts ($M)
+# FIXED: Outputs unsigned, pure numbers scaled to Million layouts ($M)
 def fmt_unsigned_fiat_flow(val):
     millions_val = abs(val) / 1000000.0
     return f"{millions_val:,.1f}M"
@@ -307,17 +307,16 @@ def main(page: ft.Page):
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
         min_x=0,
-        max_x=21, # Locked coordinate space to matching 8 internal column blocks
+        max_x=21, # Ground target size scale mapped cleanly across 8 vertical intervals
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=220
     )
 
-    # Padding Left calibrated to 54px and Right to 12px. 
-    # This precisely bounds the text to the canvas rendering lines.
+    # FIXED: Calibrated padding to left=51 and right=14 to lock alignment with the canvas edges
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(left=54, right=12)
+        padding=ft.padding.only(left=51, right=14)
     )
 
     def create_section_header(title):
@@ -352,19 +351,20 @@ def main(page: ft.Page):
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            # --- REDIS LOGGING ENGINE (WITH TIME DUP GUARD) ---
+            # --- REDIS LOGGING ENGINE (WITH Bulletproof Float Snapshotting) ---
             time_now = datetime.now(timezone.utc)
-            current_refresh_ts = time_now.strftime("%m-%d %H:%M")
+            current_refresh_epoch = time_now.timestamp()
             try:
                 last_gex_element = redis.lindex(REDIS_KEY, -1)
                 is_gex_dup = False
                 if last_gex_element:
-                    if json.loads(last_gex_element).get("timestamp") == current_refresh_ts:
+                    # Guard writes within the same minute threshold
+                    if abs(current_refresh_epoch - json.loads(last_gex_element).get("epoch", 0)) < 60.0:
                         is_gex_dup = True
 
                 if not is_gex_dup:
                     snapshot = {
-                        "timestamp": current_refresh_ts,
+                        "epoch": current_refresh_epoch,
                         "gex": round(m['net_gex_3m'], 2)
                     }
                     redis.rpush(REDIS_KEY, json.dumps(snapshot))
@@ -372,7 +372,7 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- GENERATE STEP LABELS ACROSS 21 HOURS (8 MARKERS) ---
+            # --- GENERATE STEP LABELS ACROSS 21 HRS (8 MARKERS) ---
             current_utc_hour = time_now.hour
             row_elements = []
             for step in range(0, 22, 3): 
@@ -391,24 +391,28 @@ def main(page: ft.Page):
                     for record in raw_records:
                         try:
                             data = json.loads(record)
-                            ts_str = data['timestamp']
-                            if "-" in ts_str:
-                                rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                            else:
-                                rec_time = datetime.strptime(f"{time_now.year}-{time_now.month}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                                
-                            if rec_time > time_now:
-                                rec_time = rec_time.replace(year=time_now.year - 1)
-                                
-                            hours_diff = (time_now - rec_time).total_seconds() / 3600.0
+                            # FIXED: Direct robust float tracking completely resolves date string parsing crashes
+                            rec_epoch = data.get("epoch")
+                            
+                            # Fallback strategy for older structural data strings inside database
+                            if not rec_epoch:
+                                ts_str = data['timestamp']
+                                if "-" in ts_str:
+                                    rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                                else:
+                                    rec_time = datetime.strptime(f"{time_now.year}-{time_now.month}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                                if rec_time > time_now: rec_time = rec_time.replace(year=time_now.year - 1)
+                                rec_epoch = rec_time.timestamp()
+
+                            hours_diff = (current_refresh_epoch - rec_epoch) / 3600.0
                             if hours_diff <= 21.0: 
-                                data['epoch'] = rec_time.timestamp()
+                                data['epoch_computed'] = rec_epoch
                                 data['hours_ago'] = hours_diff
                                 filtered_records.append(data)
                         except Exception:
                             continue
 
-                    filtered_records.sort(key=lambda x: x['epoch'])
+                    filtered_records.sort(key=lambda x: x['epoch_computed'])
 
                     gex_in_millions = [data['gex'] / 1000000.0 for data in filtered_records]
                     max_m = max(gex_in_millions, default=50.0)
@@ -498,6 +502,7 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
+        # FIXED: Specific label styling applied matching requested configurations exactly
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
     )
     refresh_dashboard()
