@@ -192,7 +192,7 @@ def main(page: ft.Page):
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
-    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
+    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=20)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
@@ -279,28 +279,31 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- FIXED: FORCE EXPLICIT TIMELINE ARRAYS ON MOBILE VIEWS ---
+            # --- BYPASS ENGINE: GENERATE SINGLE UNBREAKABLE CUSTOM ROW CONTROL ---
             current_utc_hour = time_now.hour
-            y_timeline_labels = []
+            row_items = []
             
             for step in range(0, 25, 3):
                 calculated_hour = (current_utc_hour - 24 + step) % 24
-                y_timeline_labels.append(
-                    ft.ChartAxisLabel(
-                        value=float(step),
-                        label=ft.Container(
-                            content=ft.Text(
-                                f"{calculated_hour:02d}", 
-                                size=10, 
-                                color=ft.colors.GREY_400, 
-                                weight=ft.FontWeight.W_500
-                            ),
-                            alignment=ft.alignment.center,
-                            width=16  # Small safe footprint stops collision engine drops
-                        )
+                row_items.append(
+                    ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
+                )
+            
+            # Anchor single full width container row to center canvas coordinate (x=12)
+            history_bottom_axis.labels = [
+                ft.ChartAxisLabel(
+                    value=12.0,
+                    label=ft.Container(
+                        content=ft.Row(
+                            controls=row_items,
+                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+                        ),
+                        # Exact proportional padding offset keeping timeline matched to edges
+                        padding=ft.padding.only(left=22, right=22),
+                        width=page.width if page.width else 360
                     )
                 )
-            history_bottom_axis.labels = y_timeline_labels
+            ]
 
             # --- POPULATE ROLLING 24-HOUR HISTORICAL TREND ---
             try:
