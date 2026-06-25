@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from upstash_redis import Redis
 redis = Redis(
     url="https://large-ghost-131173.upstash.io", 
-    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
+    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0TzlhOWJmZGM1MTg5OWViZDIxMw"
 )
 REDIS_KEY = "deribit_gex_3d_history"
 MAX_HISTORY_POINTS = 2500
@@ -132,13 +132,32 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    call_vol_3m = call_df_3m['volume'].sum()
-    put_vol_3m = put_df_3m['volume'].sum()
-    
-    signed_call_inflow = call_vol_3m if call_gex >= 0 else -call_vol_3m
-    signed_put_inflow = put_vol_3m if put_gex >= 0 else -put_vol_3m
-    net_flow = signed_call_inflow - signed_put_inflow
-    
+    # --- METHOD B: OPTION TAPE DIRECTIONAL ENGINE ---
+    net_call_flow = 0.0
+    net_put_flow = 0.0
+    try:
+        trades_url = f"https://www.deribit.com/api/v2/public/get_last_trades_by_currency?currency={currency}&kind=option&count=1000"
+        trades_res = requests.get(trades_url).json()
+        trades_list = trades_res.get('result', {}).get('trades', [])
+        
+        for trade in trades_list:
+            ins_name = trade.get('instrument_name', '')
+            direction = trade.get('direction', 'buy') # buy (taker hits ask) / sell (taker hits bid)
+            amount = float(trade.get('amount', 0))
+            
+            if ins_name.endswith('-C'):
+                # Call Logic: Buying = Bullish (+), Selling = Bearish (-)
+                if direction == 'buy': net_call_flow += amount
+                else: net_call_flow -= amount
+            elif ins_name.endswith('-P'):
+                # Put Logic: Buying = Bearish (-), Selling = Bullish (+)
+                if direction == 'buy': net_put_flow -= amount
+                else: net_put_flow += amount
+    except Exception as ex:
+        print(f"Tape Stream Interrupted: {ex}")
+
+    # Net combinations of the directional biases
+    net_flow_bias = net_call_flow + net_put_flow
     call_oi_3m = call_df_3m['oi'].sum()
     put_oi_3m = put_df_3m['oi'].sum()
     cp_ratio = put_oi_3m / call_oi_3m if call_oi_3m > 0 else 0
@@ -168,8 +187,8 @@ def fetch_deribit_gex(currency="BTC"):
         "net_gex_3m": net_gex_3m,
         "call_weight": call_weight_pct, "max_pain": max_pain_level, "flip": flip_level,
         "breakout": breakout_price, "resistance": resistance_level, "support": support_level,
-        "call_inflow": signed_call_inflow, "put_inflow": signed_put_inflow,
-        "net_flow": net_flow, "cp_ratio": cp_ratio, "chart_data": chart_matrix
+        "call_inflow": net_call_flow, "put_inflow": net_put_flow,
+        "net_flow": net_flow_bias, "cp_ratio": cp_ratio, "chart_data": chart_matrix
     }
 
 def fmt_gex(val):
@@ -177,10 +196,9 @@ def fmt_gex(val):
     abs_val = abs(val)
     return f"{sign}{abs_val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{abs_val:.1f}"
 
-def fmt_inflow(val):
+def fmt_order_flow(val):
     sign = "+" if val >= 0 else ""
-    abs_val = abs(val)
-    return f"{sign}{val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{val:.0f}"
+    return f"{sign}{val:,.1f}"
 
 def main(page: ft.Page):
     page.title = "Deribit GEX Terminal"
@@ -204,9 +222,10 @@ def main(page: ft.Page):
     breakout_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_ACCENT)
     res_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_300)
     sup_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PINK_400)
-    inflows_call_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
-    outflows_put_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
-    net_flow_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
+    
+    inflows_call_txt = ft.Text("0.0", size=18, weight=ft.FontWeight.W_600)
+    outflows_put_txt = ft.Text("0.0", size=18, weight=ft.FontWeight.W_600)
+    net_flow_txt = ft.Text("0.0", size=18, weight=ft.FontWeight.W_600)
     cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
 
     gex_bar_chart = ft.BarChart(bar_groups=[], bottom_axis=net_axis, 
@@ -233,14 +252,12 @@ def main(page: ft.Page):
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
         min_x=0,
-        max_x=21,  # Set maximum range to 21 hours
+        max_x=21,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=240
     )
 
-    # FIXED: Calibrated left padding to 54 and added 24 right margin padding to 
-    # compress the row so it locks directly under the internal grid coordinates.
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         padding=ft.padding.only(left=54, right=24, top=2)
@@ -266,12 +283,19 @@ def main(page: ft.Page):
             breakout_txt.value = f"${m['breakout']:,.0f}"
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}"
-            inflows_call_txt.value = fmt_inflow(m['call_inflow'])
+            
+            # Call Flow Format & Color Mapping
+            inflows_call_txt.value = fmt_order_flow(m['call_inflow'])
             inflows_call_txt.color = ft.colors.GREEN_400 if m['call_inflow'] >= 0 else ft.colors.RED_400
-            outflows_put_txt.value = fmt_inflow(m['put_inflow'])
+            
+            # Put Flow Format & Color Mapping (Now accurately tracking buying as Red/Minus, selling as Green/Plus)
+            outflows_put_txt.value = fmt_order_flow(m['put_inflow'])
             outflows_put_txt.color = ft.colors.GREEN_400 if m['put_inflow'] >= 0 else ft.colors.RED_400
-            net_flow_txt.value = fmt_gex(m['net_flow'])
+            
+            # Net Combined Premium Bias Mapping
+            net_flow_txt.value = fmt_order_flow(m['net_flow'])
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
+            
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
             # --- REDIS LOGGING ENGINE ---
@@ -289,7 +313,7 @@ def main(page: ft.Page):
             # --- GENERATE STEP LABELS ACROSS 21 HOURS ---
             current_utc_hour = time_now.hour
             row_elements = []
-            for step in range(0, 22, 3):  # 8 cleanly spaced markers from -21h up to 0h
+            for step in range(0, 22, 3):
                 calculated_hour = (current_utc_hour - 21 + step) % 24
                 row_elements.append(
                     ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
@@ -310,7 +334,7 @@ def main(page: ft.Page):
                                 rec_time = rec_time.replace(year=time_now.year - 1)
                                 
                             hours_diff = (time_now - rec_time).total_seconds() / 3600.0
-                            if hours_diff <= 21.0:  # Bound processing filter logic inside 21 hours
+                            if hours_diff <= 21.0:
                                 data['epoch'] = rec_time.timestamp()
                                 data['hours_ago'] = hours_diff
                                 filtered_records.append(data)
@@ -401,7 +425,7 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("INFLOW ANALYSIS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("24h Call Inflows", inflows_call_txt), ui_row_item("24h Put Inflows", outflows_put_txt), ui_row_item("Net Volume Bias", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Net Call Order Flow", inflows_call_txt), ui_row_item("Net Put Order Flow", outflows_put_txt), ui_row_item("Net Premium Bias", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
     )
     refresh_dashboard()
 
