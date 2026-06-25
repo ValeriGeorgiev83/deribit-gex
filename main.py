@@ -3,7 +3,17 @@ import requests
 import pandas as pd
 import os
 import math
+import json
 from datetime import datetime, timezone
+from upstash_redis import Redis
+
+# Initialize Upstash Redis
+redis = Redis(
+    url="https://large-ghost-131173.upstash.io", 
+    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
+)
+REDIS_KEY = "deribit_gex_3d_history"
+MAX_HISTORY_POINTS = 3500  # Automatically clips ancient data
 
 def fetch_deribit_gex(currency="BTC"):
     """Fetches and calculates GEX and market flow data from Deribit."""
@@ -76,6 +86,11 @@ def fetch_deribit_gex(currency="BTC"):
     call_gex = call_df_3m['gex'].sum()
     put_gex = put_df_3m['gex'].sum()
     net_gex = call_gex + put_gex
+    
+    # Precise calculation for short-term <=3d Net GEX
+    call_gex_3d = df_3d[df_3d['type'] == 'C']['gex'].sum()
+    put_gex_3d = df_3d[df_3d['type'] == 'P']['gex'].sum()
+    net_gex_3d = call_gex_3d + put_gex_3d
     
     total_abs_gex = abs(call_gex) + abs(put_gex)
     call_weight_pct = (abs(call_gex) / total_abs_gex * 100) if total_abs_gex > 0 else 50.0
@@ -155,6 +170,7 @@ def fetch_deribit_gex(currency="BTC"):
 
     return {
         "spot": spot_price, "call_gex": call_gex, "put_gex": put_gex, "net_gex": net_gex,
+        "net_gex_3d": net_gex_3d, # Exposed short term delta
         "call_weight": call_weight_pct, "max_pain": max_pain_level, "flip": flip_level,
         "breakout": breakout_price, "resistance": resistance_level, "support": support_level,
         "call_inflow": signed_call_inflow, "put_inflow": signed_put_inflow,
@@ -177,9 +193,11 @@ def main(page: ft.Page):
     page.scroll = ft.ScrollMode.AUTO
     page.padding = 14
 
-    # Independent Axis Objects
     net_axis = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
+    
+    # Historical Curve Axis Setup
+    history_axis = ft.ChartAxis(labels=[], labels_size=24)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
@@ -201,10 +219,26 @@ def main(page: ft.Page):
                                 vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
                                 animate=True, interactive=True, height=240)
 
-    # MODIFIED: Now a BarChart to allow exact axis synchronization
     abs_gex_chart = ft.BarChart(
-        bar_groups=[],
-        bottom_axis=abs_axis,
+        bar_groups=[], bottom_axis=abs_axis,
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        animate=True, interactive=True, height=240
+    )
+
+    # NEW: Historical Short-Term Curve Widget (<=3d Expirations)
+    history_line_chart = ft.LineChart(
+        data_series=[
+            ft.LineChartData(
+                spots=[],
+                color=ft.colors.CYAN_400,
+                stroke_width=2.5,
+                curved=True,
+                point_shape=ft.ChartPointShape.CIRCLE,
+                below_line_fill_color=ft.colors.with_opacity(0.05, ft.colors.CYAN_400),
+            )
+        ],
+        bottom_axis=history_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         animate=True, interactive=True, height=240
@@ -238,6 +272,44 @@ def main(page: ft.Page):
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
+            # --- REDIS LOGGING ENGINE ---
+            try:
+                snapshot = {
+                    "timestamp": datetime.now(timezone.utc).strftime("%m-%d %H:%M"),
+                    "gex": round(m['net_gex_3d'], 2)
+                }
+                # Log to tail of list
+                redis.rpush(REDIS_KEY, json.dumps(snapshot))
+                # Prune list down to ensure we stay perfectly clean and space-efficient
+                redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
+            except Exception as ex:
+                print(f"Cloud Logging Interrupted: {ex}")
+
+            # --- POPULATE HISTORICAL CURVE FROM REDIS ---
+            try:
+                raw_records = redis.lrange(REDIS_KEY, 0, -1)
+                if raw_records:
+                    line_spots = []
+                    hist_labels = []
+                    step = max(1, len(raw_records) // 6) # Space labels out naturally
+                    
+                    for idx, record in enumerate(raw_records):
+                        data = json.loads(record)
+                        line_spots.append(ft.LineChartDataPoint(x=idx, y=data['gex']))
+                        
+                        if idx % step == 0 or idx == len(raw_records) - 1:
+                            hist_labels.append(
+                                ft.ChartAxisLabel(
+                                    value=idx,
+                                    label=ft.Text(data['timestamp'], size=9, color=ft.colors.GREY_500, rotate=30)
+                                )
+                            )
+                    history_line_chart.data_series[0].spots = line_spots
+                    history_axis.labels = hist_labels
+            except Exception as ex:
+                print(f"Cloud Read Failure: {ex}")
+            
+            # --- BAR CHARTS ENGINE ---
             new_groups, abs_groups, new_labels, min_dist, spot_index = [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
@@ -246,7 +318,6 @@ def main(page: ft.Page):
             for item in m['chart_data']:
                 val, abs_val, strike_val, is_spot = item['gex'], item['abs_gex'], item['strike'], (item['index'] == spot_index)
                 new_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val, color=ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
-                # NEW: Yellow bars for absolute GEX
                 abs_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_val, color=ft.colors.YELLOW, width=12, border_radius=2)]))
                 
                 if strike_val % 2000 == 0:
@@ -265,6 +336,10 @@ def main(page: ft.Page):
         ft.Row([ft.Text("⚡ Deribit GEX Terminal", size=20, weight=ft.FontWeight.BOLD),
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
+        
+        create_section_header("SHORT-TERM NET GEX HISTORICAL TREND (<=3D EXP)"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=25), content=history_line_chart)),
+        
         create_section_header("NET GAMMA PROFILES BY STRIKE"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart)),
         create_section_header("ABS GEX (GROSS HEDGING ACTIVITY)"),
