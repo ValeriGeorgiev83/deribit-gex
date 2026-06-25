@@ -192,7 +192,7 @@ def main(page: ft.Page):
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
-    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
+    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=24, interval=3)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
@@ -236,7 +236,7 @@ def main(page: ft.Page):
         min_x=0,
         max_x=23,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=1),
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=260
     )
 
@@ -353,7 +353,8 @@ def main(page: ft.Page):
                         x_labels.append(
                             ft.ChartAxisLabel(
                                 value=x_coord,
-                                label=ft.Text(f"{target_hour:02d}:00", size=10, color=ft.colors.GREY_500, weight=ft.FontWeight.W_500)
+                                # CHANGED: Formatted to 2-digits only (omitting the minutes)
+                                label=ft.Text(f"{target_hour:02d}", size=10, color=ft.colors.GREY_500, weight=ft.FontWeight.W_500)
                             )
                         )
                     history_bottom_axis.labels = x_labels
