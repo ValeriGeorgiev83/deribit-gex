@@ -192,7 +192,8 @@ def main(page: ft.Page):
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
-    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=24, interval=3)
+    # FIX: Removed the 'interval=3' keyword argument that caused the Flet crash
+    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
@@ -296,17 +297,13 @@ def main(page: ft.Page):
                             hours_diff = (time_now - rec_time).total_seconds() / 3600.0
                             if hours_diff <= 24.0:
                                 data['epoch'] = rec_time.timestamp()
+                                # Store how many hours ago this point occurred
+                                data['hours_ago'] = hours_diff
                                 filtered_records.append(data)
                         except Exception:
                             continue
 
-                    if len(filtered_records) < 2:
-                        for idx, record in enumerate(raw_records[-24:]):
-                            d = json.loads(record)
-                            d['epoch'] = idx
-                            filtered_records.append(d)
-
-                    # Ensure chronological sorting oldest-to-newest (left-to-right)
+                    # Ensure chronological sorting oldest-to-newest
                     filtered_records.sort(key=lambda x: x['epoch'])
 
                     gex_in_millions = [data['gex'] / 1000000.0 for data in filtered_records]
@@ -334,26 +331,25 @@ def main(page: ft.Page):
                     history_left_axis.labels = y_labels
 
                     line_points = []
-                    total_records = len(filtered_records)
-                    
-                    for idx, data in enumerate(filtered_records):
-                        x_pos = (idx / (total_records - 1)) * 23 if total_records > 1 else idx
-                        line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
+                    for data in filtered_records:
+                        # FIX: This places data exactly on its real temporal hour coordinate (0 to 23)
+                        # instead of stretching an incomplete 3-hour history across the whole graph.
+                        x_pos = 23.0 - data['hours_ago']
+                        if 0 <= x_pos <= 23:
+                            line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
                     
                     history_line_chart.data_series[0].data_points = line_points
 
-                    # --- CHRONOLOGICAL LABELS (OLDEST LEFT -> NEWEST RIGHT) ---
+                    # --- CHRONOLOGICAL LABELS ---
                     x_labels = []
                     current_utc_hour = time_now.hour
                     
-                    # Step 8 times across the 24h timeline grid (every 3 hours)
                     for i in range(0, 24, 3):
                         target_hour = (current_utc_hour - 23 + i) % 24
                         x_coord = i
                         x_labels.append(
                             ft.ChartAxisLabel(
                                 value=x_coord,
-                                # CHANGED: Formatted to 2-digits only (omitting the minutes)
                                 label=ft.Text(f"{target_hour:02d}", size=10, color=ft.colors.GREY_500, weight=ft.FontWeight.W_500)
                             )
                         )
