@@ -119,12 +119,10 @@ def fetch_deribit_gex(currency="BTC"):
     put_oi_3m = put_df_3m['oi'].sum()
     cp_ratio = put_oi_3m / call_oi_3m if call_oi_3m > 0 else 0
 
-    # Strict $1000 anchoring: +/- $8000 from center spot
     center_spot_1k = round(spot_price / 1000.0) * 1000
     lower_bound = center_spot_1k - 8000
     upper_bound = center_spot_1k + 8000
     
-    # Pulled directly from df_3d to keep alignment clear
     df_chart_range = df_3d[(df_3d['strike'] >= lower_bound) & (df_3d['strike'] <= upper_bound)].copy()
     if df_chart_range.empty:
         df_chart_range = df_3m[(df_3m['strike'] >= lower_bound) & (df_3m['strike'] <= upper_bound)].copy()
@@ -275,7 +273,6 @@ def main(page: ft.Page):
                     )
                 )
                 
-                # Render clear axis tags on every standard $2000 increment
                 if strike_val % 2000 == 0:
                     new_labels.append(
                         ft.ChartAxisLabel(
@@ -354,4 +351,9 @@ def main(page: ft.Page):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    ft.app(target=main, port=port, host="0.0.0.0", view=ft.AppView.WEB_ONLY)
+    ft.app(
+        target=main, 
+        port=port, 
+        host="0.0.0.0", 
+        view=ft.AppView.WEB_BROWSER
+    )
