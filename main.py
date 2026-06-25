@@ -192,8 +192,8 @@ def main(page: ft.Page):
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
-    # Increased label size to safely house native timeline digits on the canvas base
-    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=20)
+    # Keeping bottom axis label empty to avoid native step occlusion
+    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=0)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
@@ -237,7 +237,13 @@ def main(page: ft.Page):
         max_x=21,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
-        animate=True, interactive=True, height=240
+        animate=True, interactive=True, height=220 # Marginally lowered canvas height to create neat buffer space for timeline
+    )
+
+    # Re-implemented row method utilizing a left offset margin to perfectly mirror line step origins
+    native_timeline_container = ft.Container(
+        content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        padding=ft.padding.only(left=48, right=14)
     )
 
     def create_section_header(title):
@@ -280,18 +286,15 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- NATIVE AXIS TIMELINE ENGINE ---
+            # --- GENERATE STEP LABELS ACROSS 21 HOURS ---
             current_utc_hour = time_now.hour
-            x_labels = []
+            row_elements = []
             for step in range(0, 22, 3):
                 calculated_hour = (current_utc_hour - 21 + step) % 24
-                x_labels.append(
-                    ft.ChartAxisLabel(
-                        value=step,
-                        label=ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
-                    )
+                row_elements.append(
+                    ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
                 )
-            history_bottom_axis.labels = x_labels
+            native_timeline_container.content.controls = row_elements
 
             # --- POPULATE ROLLING HISTORICAL TREND ---
             try:
@@ -381,8 +384,20 @@ def main(page: ft.Page):
         create_section_header("NET GAMMA EXPOSURE (21 HRS)"),
         ft.Card(
             content=ft.Container(
-                padding=ft.padding.only(left=5, right=20, top=15, bottom=15), 
-                content=history_line_chart
+                padding=ft.padding.only(left=5, right=20, top=15, bottom=10), 
+                content=ft.Stack([
+                    # Using a Stack structure allows placing the layout labels safely over the chart padding layer
+                    ft.Column([
+                        history_line_chart,
+                        ft.Container(height=16) # Static layout block holder
+                    ]),
+                    ft.Container(
+                        content=native_timeline_container,
+                        bottom=0,
+                        left=0,
+                        right=0
+                    )
+                ])
             )
         ),
         
@@ -396,8 +411,3 @@ def main(page: ft.Page):
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("INFLOW ANALYSIS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("24h Call Inflows", inflows_call_txt), ui_row_item("24h Put Inflows", outflows_put_txt), ui_row_item("Net Volume Bias", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
-    )
-    refresh_dashboard()
-
-if __name__ == "__main__":
-    ft.app(target=main, port=int(os.environ.get("PORT", 8080)), host="0.0.0.0", view=None)
