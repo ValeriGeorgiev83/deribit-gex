@@ -7,12 +7,10 @@ from datetime import datetime, timezone
 
 def fetch_deribit_gex(currency="BTC"):
     try:
-        # 1. Fetch live index spot price
         idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
         idx_res = requests.get(idx_url).json()
         spot_price = float(idx_res['result']['index_price'])
         
-        # 2. Fetch options market summary
         opt_url = f"https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency={currency}&kind=option"
         opt_res = requests.get(opt_url).json()
         data_list = opt_res['result']
@@ -37,9 +35,7 @@ def fetch_deribit_gex(currency="BTC"):
             expiry_dt = datetime.strptime(expiry_str, "%d%b%y").replace(tzinfo=timezone.utc)
             expiry_dt = expiry_dt.replace(hour=8, minute=0, second=0)
             days_to_expiry = (expiry_dt - now).total_seconds() / 86400.0
-            
-            if days_to_expiry < 0:
-                continue
+            if days_to_expiry < 0: continue
         except Exception:
             continue
             
@@ -71,11 +67,8 @@ def fetch_deribit_gex(currency="BTC"):
     
     df_3m = base_df[base_df['days_to_expiry'] <= 90.0]
     df_3d = base_df[base_df['days_to_expiry'] <= 3.0]
-    
-    if df_3d.empty: 
-        df_3d = df_3m
+    if df_3d.empty: df_3d = df_3m
 
-    # --- SECTION 1: TOTAL GAMMA EXPOSURE (<= 3 Months) ---
     call_df_3m = df_3m[df_3m['type'] == 'C']
     put_df_3m = df_3m[df_3m['type'] == 'P']
     
@@ -86,7 +79,6 @@ def fetch_deribit_gex(currency="BTC"):
     total_abs_gex = abs(call_gex) + abs(put_gex)
     call_weight_pct = (abs(call_gex) / total_abs_gex * 100) if total_abs_gex > 0 else 50.0
     
-    # --- SECTION 2: IMPORTANT LEVELS (<= 3 Days Only) ---
     call_df_3d = df_3d[df_3d['type'] == 'C']
     put_df_3d = df_3d[df_3d['type'] == 'P']
     
@@ -119,7 +111,14 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # --- SECTION 4: NET GAMMA BY STRIKE CHART DATA ---
+    call_vol_3m = call_df_3m['volume'].sum()
+    put_vol_3m = put_df_3m['volume'].sum()
+    net_flow = call_vol_3m - put_vol_3m
+    
+    call_oi_3m = call_df_3m['oi'].sum()
+    put_oi_3m = put_df_3m['oi'].sum()
+    cp_ratio = put_oi_3m / call_oi_3m if call_oi_3m > 0 else 0
+
     center_spot_500 = round(spot_price / 500.0) * 500
     lower_bound = center_spot_500 - 5000
     upper_bound = center_spot_500 + 5000
@@ -167,4 +166,44 @@ def fmt_gex(val):
 def main(page: ft.Page):
     page.title = "GEX Advanced Terminal"
     page.theme_mode = ft.ThemeMode.DARK
-    page.scroll = 
+    page.scroll = ft.ScrollMode.AUTO
+    page.padding = 14
+
+    spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
+    call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
+    put_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.RED_400)
+    net_gex_txt = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
+    weight_txt = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_300)
+    
+    pain_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600)
+    flip_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.ORANGE_400)
+    breakout_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_ACCENT)
+    res_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_300)
+    sup_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PINK_400)
+    
+    inflows_call_txt = ft.Text("+0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
+    outflows_put_txt = ft.Text("-0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.RED_400)
+    net_flow_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
+    cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
+
+    v_lines = {}
+    
+    def vf(val):
+        return v_lines.get(int(val), False)
+
+    def hf(val):
+        return abs(round(val)) == 50000
+
+    gex_bar_chart = ft.BarChart(
+        bar_groups=[],
+        bottom_axis=ft.ChartAxis(labels=[], labels_size=22),
+        horizontal_grid_lines=ft.ChartGridLines(
+            color=ft.colors.SURFACE_VARIANT,
+            width=1.0,
+            interval=50000,
+            check_handler=hf
+        ),
+        vertical_grid_lines=ft.ChartGridLines(
+            color=ft.colors.GREY_800,
+            width=0.6,
+            interval=1,
