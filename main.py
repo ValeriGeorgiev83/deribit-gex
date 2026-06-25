@@ -97,18 +97,22 @@ def fetch_deribit_gex(currency="BTC"):
             min_pain = pain
             max_pain_level = s
 
-    # STRUCTURAL FLIP CALCULATOR: Aligns with chart-level intervals
-    grouped_gex_3d = df_3d.groupby('strike')['gex'].sum().sort_index()
+    # STRUCTURAL MACRO FLIP CALCULATOR: Anchored strictly to the chart's $1,000 bins
+    df_3d_copy = df_3d.copy()
+    df_3d_copy['macro_bucket'] = df_3d_copy['strike'].apply(lambda x: round(x / 1000.0) * 1000)
+    macro_grouped = df_3d_copy.groupby('macro_bucket')['gex'].sum().sort_index()
+
     flip_level = spot_price
-    if not grouped_gex_3d.empty:
-        strikes_list = grouped_gex_3d.index.tolist()
-        for i in range(len(strikes_list) - 1):
-            s1, s2 = strikes_list[i], strikes_list[i+1]
-            g1, g2 = grouped_gex_3d.loc[s1], grouped_gex_3d.loc[s2]
+    if not macro_grouped.empty:
+        buckets_list = macro_grouped.index.tolist()
+        for i in range(len(buckets_list) - 1):
+            b1, b2 = buckets_list[i], buckets_list[i+1]
+            g1, g2 = macro_grouped.loc[b1], macro_grouped.loc[b2]
             
-            # Look for true cumulative crossover boundary
+            # Check for structural crossing across zero between macro zones
             if (g1 < 0 and g2 > 0) or (g1 > 0 and g2 < 0):
-                flip_level = s1 - g1 * (s2 - s1) / (g2 - g1)
+                # Interpolate accurately between the macro buckets
+                flip_level = b1 - g1 * (b2 - b1) / (g2 - g1)
                 flip_level = round(flip_level)
                 break
 
