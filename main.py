@@ -192,7 +192,6 @@ def main(page: ft.Page):
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
-    # FIX: Removed the 'interval=3' keyword argument that caused the Flet crash
     history_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
@@ -226,16 +225,17 @@ def main(page: ft.Page):
         data_series=[
             ft.LineChartData(
                 data_points=[],
-                color=ft.colors.CYAN_400,
+                color=ft.colors.ORANGE_400,
                 stroke_width=2.5,
                 curved=True,
-                below_line_bgcolor=ft.colors.with_opacity(0.05, ft.colors.CYAN_400),
+                # FIXED: Removed below_line_bgcolor property completely to drop the shaded area
             )
         ],
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
         min_x=0,
         max_x=23,
+        bottom_axis_interval=3, 
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=260
@@ -297,13 +297,11 @@ def main(page: ft.Page):
                             hours_diff = (time_now - rec_time).total_seconds() / 3600.0
                             if hours_diff <= 24.0:
                                 data['epoch'] = rec_time.timestamp()
-                                # Store how many hours ago this point occurred
                                 data['hours_ago'] = hours_diff
                                 filtered_records.append(data)
                         except Exception:
                             continue
 
-                    # Ensure chronological sorting oldest-to-newest
                     filtered_records.sort(key=lambda x: x['epoch'])
 
                     gex_in_millions = [data['gex'] / 1000000.0 for data in filtered_records]
@@ -332,8 +330,6 @@ def main(page: ft.Page):
 
                     line_points = []
                     for data in filtered_records:
-                        # FIX: This places data exactly on its real temporal hour coordinate (0 to 23)
-                        # instead of stretching an incomplete 3-hour history across the whole graph.
                         x_pos = 23.0 - data['hours_ago']
                         if 0 <= x_pos <= 23:
                             line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
