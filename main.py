@@ -225,16 +225,15 @@ def main(page: ft.Page):
         data_series=[ft.LineChartData(data_points=[], color=ft.colors.ORANGE_400, stroke_width=2.5, curved=True)],
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
-        min_x=0,
-        max_x=21,
+        min_x=0, max_x=21,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
-        animate=True, interactive=True, height=220
+        animate=True, interactive=True, height=240
     )
 
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(left=48, right=14)
+        padding=ft.padding.only(left=55, right=14, top=2)
     )
 
     def create_section_header(title):
@@ -273,10 +272,7 @@ def main(page: ft.Page):
             except Exception: pass
 
             current_utc_hour = time_now.hour
-            row_elements = []
-            for step in range(0, 22, 3):
-                calculated_hour = (current_utc_hour - 21 + step) % 24
-                row_elements.append(ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500))
+            row_elements = [ft.Text(f"{(current_utc_hour - 21 + step) % 24:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500) for step in range(0, 22, 3)]
             native_timeline_container.content.controls = row_elements
 
             try:
@@ -295,22 +291,22 @@ def main(page: ft.Page):
                     filtered_records.sort(key=lambda x: x['epoch'])
                     
                     gex_vals = [d['gex'] for d in filtered_records]
-                    bound = max(abs(max(gex_vals, default=50)), abs(min(gex_vals, default=-50)))
-                    bound = math.ceil(bound / 50.0) * 50.0
+                    bound = math.ceil(max(abs(max(gex_vals, default=50)), abs(min(gex_vals, default=-50))) / 50.0) * 50.0
                     history_line_chart.min_y = -bound * 1000000; history_line_chart.max_y = bound * 1000000
-                    
-                    line_points = [ft.LineChartDataPoint(21.0 - d['hours_ago'], d['gex']) for d in filtered_records]
-                    history_line_chart.data_series[0].data_points = line_points
+                    history_line_chart.data_series[0].data_points = [ft.LineChartDataPoint(21.0 - d['hours_ago'], d['gex']) for d in filtered_records]
             except Exception: pass
             
+            # Bar chart updates... (omitted for brevity, keep existing logic)
             page.update()
 
     page.add(
         ft.Row([ft.Text("⚡ Deribit GEX Terminal", size=20, weight=ft.FontWeight.BOLD), ft.ElevatedButton("Refresh", on_click=refresh_dashboard)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        ft.Card(content=ft.Container(content=ft.Stack([
-            ft.Column([history_line_chart, ft.Container(height=16)]),
-            ft.Container(content=native_timeline_container, bottom=0, left=0, right=0)
-        ]), padding=12))
+        create_section_header("NET GAMMA EXPOSURE (21 HRS)"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=20, top=15, bottom=0), content=ft.Stack([
+            ft.Column([history_line_chart, ft.Container(height=25)]),
+            ft.Container(content=native_timeline_container, padding=ft.padding.only(left=55, right=0), bottom=8)
+        ]))),
+        # ... (rest of sections)
     )
     refresh_dashboard()
 
