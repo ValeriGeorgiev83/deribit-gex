@@ -142,7 +142,6 @@ def fetch_deribit_gex(currency="BTC"):
         
     df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     
-    # Calculate Gross Gamma (Sum of absolute GEX contributions)
     df_chart_range['abs_gex_contribution'] = df_chart_range['gex'].abs()
     bucket_data = df_chart_range.groupby('strike_bucket').agg({'gex': 'sum', 'abs_gex_contribution': 'sum'})
     
@@ -178,6 +177,10 @@ def main(page: ft.Page):
     page.scroll = ft.ScrollMode.AUTO
     page.padding = 14
 
+    # Pre-initialized Axis objects to avoid Flet NoneType errors
+    net_axis = ft.ChartAxis(labels=[], labels_size=24)
+    abs_axis = ft.ChartAxis(labels=[], labels_size=24)
+
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
     put_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.RED_400)
@@ -193,7 +196,7 @@ def main(page: ft.Page):
     net_flow_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
 
-    gex_bar_chart = ft.BarChart(bar_groups=[], bottom_axis=ft.ChartAxis(labels=[], labels_size=24), 
+    gex_bar_chart = ft.BarChart(bar_groups=[], bottom_axis=net_axis, 
                                 horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
                                 vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
                                 animate=True, interactive=True, height=240)
@@ -202,6 +205,7 @@ def main(page: ft.Page):
         data_series=[],
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=50000000),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        bottom_axis=abs_axis,
         animate=True, height=240
     )
 
@@ -247,10 +251,10 @@ def main(page: ft.Page):
                     new_labels.append(ft.ChartAxisLabel(value=item['index'], label=ft.Text(f"{strike_val/1000:.0f}k", size=10, color=label_color, rotate=45, weight=ft.FontWeight.BOLD if is_spot else ft.FontWeight.NORMAL)))
             
             gex_bar_chart.bar_groups = new_groups
-            gex_bar_chart.bottom_axis.labels = new_labels
+            net_axis.labels = new_labels
             
             abs_gex_chart.data_series = [ft.LineChartData(data_points=abs_points, color=ft.colors.YELLOW, curved=True, stroke_width=3, below_line_bgcolor=ft.colors.with_opacity(0.2, ft.colors.YELLOW))]
-            abs_gex_chart.bottom_axis.labels = new_labels
+            abs_axis.labels = new_labels
             
             page.update()
 
