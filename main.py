@@ -237,8 +237,12 @@ def main(page: ft.Page):
         ],
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
+        # Lock chart spacing directly to 24 hourly columns (0 to 23)
+        min_x=0,
+        max_x=23,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        # Draw exactly 23 vertical lines dividing the chart into 24 distinct hourly columns
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=1),
         animate=True, interactive=True, height=260
     )
 
@@ -285,7 +289,6 @@ def main(page: ft.Page):
             try:
                 raw_records = redis.lrange(REDIS_KEY, 0, -1)
                 if raw_records:
-                    line_points = []
                     filtered_records = []
                     time_now = datetime.now(timezone.utc)
                     
@@ -301,9 +304,9 @@ def main(page: ft.Page):
                         except Exception:
                             continue
 
-                    # Fallback Engine: Keep last 15 points if 24h metrics are still loading
+                    # Fallback Engine: Keep last 24 points if 24h metrics are still building up
                     if len(filtered_records) < 2:
-                        for record in raw_records[-15:]:
+                        for record in raw_records[-24:]:
                             filtered_records.append(json.loads(record))
 
                     # Convert stored base points to Millions (M) metrics
@@ -311,11 +314,10 @@ def main(page: ft.Page):
                     max_m = max(gex_in_millions) if gex_in_millions else 50.0
                     min_m = min(gex_in_millions) if gex_in_millions else -50.0
                     
-                    # Dynamically compute uniform symmetric boundaries step increments of 50M
+                    # Compute uniform symmetric boundaries in step increments of 50M
                     largest_abs = max(abs(max_m), abs(min_m), 50.0)
                     fixed_bound = math.ceil(largest_abs / 50.0) * 50.0
                     
-                    # Apply raw un-divided bounds directly to chart constraints
                     history_line_chart.min_y = -fixed_bound * 1000000.0
                     history_line_chart.max_y = fixed_bound * 1000000.0
 
@@ -334,39 +336,36 @@ def main(page: ft.Page):
                         current_step += 50.0
                     history_left_axis.labels = y_labels
 
-                    # Construct 24 distinct grid columns and display 3-hour round clock labels
-                    x_labels = []
-                    total_points = len(filtered_records)
-                    history_line_chart.horizontal_grid_lines = ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5)
+                    # Map incoming data snapshots evenly across the 0-23 coordinate space
+                    line_points = []
+                    total_records = len(filtered_records)
                     
-                    # Force Flet grid lines count directly matching the 24 hour blocks layout
-                    history_line_chart.vertical_grid_lines = ft.ChartGridLines(
-                        color=ft.colors.GREY_800, 
-                        width=0.5, 
-                        interval=max(1.0, total_points / 24.0)
-                    )
-
                     for idx, data in enumerate(filtered_records):
-                        line_points.append(ft.LineChartDataPoint(x=idx, y=data['gex']))
-                        
-                        # Extract the hour token from string sequence (e.g. "14:05" -> 14)
-                        time_str = data['timestamp'].split(' ')[1]
-                        hour_val = int(time_str.split(':')[0])
-                        minute_val = int(time_str.split(':')[1])
-                        
-                        # Label intervals aligned to nearest 3-hour round marks (0, 3, 6, 9, 12, 15, 18, 21)
-                        if hour_val % 3 == 0 and minute_val < 6:
-                            # Avoid duplicates clogging closely packed lines
-                            if not any(lbl.value >= idx - (total_points/12) and lbl.value <= idx + (total_points/12) for lbl in x_labels):
-                                x_labels.append(
-                                    ft.ChartAxisLabel(
-                                        value=idx,
-                                        label=ft.Text(f"{hour_val}", size=10, color=ft.colors.GREY_500, weight=ft.FontWeight.W_500)
-                                    )
-                                )
-                            
+                        # Calculate smooth fractional position from index 0 to 23
+                        x_pos = (idx / (total_records - 1)) * 23 if total_records > 1 else idx
+                        line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
+                    
                     history_line_chart.data_series[0].data_points = line_points
+
+                    # --- STRIP LABELS & FORCE STATIC 3-HOUR CLOCK SYSTEM ---
+                    # Instead of counting items, map the horizontal labels to static clock steps
+                    x_labels = []
+                    current_utc_hour = time_now.hour
+                    
+                    # Generate round 3-hour markers going back 24 hours
+                    for i in range(0, 24, 3):
+                        target_hour = (current_utc_hour - (24 - i)) % 24
+                        # Position on the 0-23 grid coordinate system
+                        x_coord = (i / 24) * 23
+                        
+                        x_labels.append(
+                            ft.ChartAxisLabel(
+                                value=x_coord,
+                                label=ft.Text(f"{target_hour}", size=10, color=ft.colors.GREY_500, weight=ft.FontWeight.W_500)
+                            )
+                        )
                     history_bottom_axis.labels = x_labels
+
             except Exception as ex:
                 print(f"Cloud Read Failure: {ex}")
             
