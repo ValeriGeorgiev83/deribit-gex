@@ -231,7 +231,7 @@ def main(page: ft.Page):
                 color=ft.colors.CYAN_400,
                 stroke_width=2.5,
                 curved=True,
-                point_shape=ft.ChartCirclePoint(radius=4),
+                point_marker=ft.ChartCirclePoint(radius=4), # Swapped point_shape to point_marker
                 below_line_fill_color=ft.colors.with_opacity(0.05, ft.colors.CYAN_400),
             )
         ],
@@ -286,67 +286,4 @@ def main(page: ft.Page):
                 if raw_records:
                     line_points = []
                     hist_labels = []
-                    step = max(1, len(raw_records) // 6)
-                    
-                    for idx, record in enumerate(raw_records):
-                        data = json.loads(record)
-                        line_points.append(ft.LineChartDataPoint(x=idx, y=data['gex']))
-                        
-                        if idx % step == 0 or idx == len(raw_records) - 1:
-                            hist_labels.append(
-                                ft.ChartAxisLabel(
-                                    value=idx,
-                                    label=ft.Text(data['timestamp'], size=9, color=ft.colors.GREY_500, rotate=30)
-                                )
-                            )
-                    history_line_chart.data_series[0].data_points = line_points
-                    history_axis.labels = hist_labels
-            except Exception as ex:
-                print(f"Cloud Read Failure: {ex}")
-            
-            # --- BAR CHARTS ENGINE ---
-            new_groups, abs_groups, new_labels, min_dist, spot_index = [], [], [], float('inf'), -1
-            for item in m['chart_data']:
-                dist = abs(item['strike'] - m['spot'])
-                if dist < min_dist: min_dist, spot_index = dist, item['index']
-            
-            for item in m['chart_data']:
-                val, abs_val, strike_val, is_spot = item['gex'], item['abs_gex'], item['strike'], (item['index'] == spot_index)
-                new_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val, color=ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
-                abs_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_val, color=ft.colors.YELLOW, width=12, border_radius=2)]))
-                
-                if strike_val % 2000 == 0:
-                    label_color = ft.colors.BLUE_200 if is_spot else ft.colors.GREY_400
-                    new_labels.append(ft.ChartAxisLabel(value=item['index'], label=ft.Text(f"{strike_val/1000:.0f}k", size=10, color=label_color, rotate=45, weight=ft.FontWeight.BOLD if is_spot else ft.FontWeight.NORMAL)))
-            
-            gex_bar_chart.bar_groups = new_groups
-            net_axis.labels = new_labels
-            
-            abs_gex_chart.bar_groups = abs_groups
-            abs_axis.labels = new_labels
-            
-            page.update()
-
-    page.add(
-        ft.Row([ft.Text("⚡ Deribit GEX Terminal", size=20, weight=ft.FontWeight.BOLD),
-                ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
-        
-        create_section_header("SHORT-TERM NET GEX HISTORICAL TREND (<=3D EXP)"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=25), content=history_line_chart)),
-        
-        create_section_header("NET GAMMA PROFILES BY STRIKE"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart)),
-        create_section_header("ABS GEX (GROSS HEDGING ACTIVITY)"),
-        ft.Card(content=ft.Container(padding=15, content=abs_gex_chart)),
-        create_section_header("TOTAL GAMMA EXPOSURE"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Call Gamma", call_gex_txt), ui_row_item("Put Gamma", put_gex_txt), ui_row_item("Net Gamma", net_gex_txt), ui_row_item("Call Weight (%)", weight_txt)]))),
-        create_section_header("IMPORTANT LEVELS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
-        create_section_header("INFLOW ANALYSIS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("24h Call Inflows", inflows_call_txt), ui_row_item("24h Put Inflows", outflows_put_txt), ui_row_item("Net Volume Bias", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
-    )
-    refresh_dashboard()
-
-if __name__ == "__main__":
-    ft.app(target=main, port=int(os.environ.get("PORT", 8080)), host="0.0.0.0", view=ft.AppView.WEB_BROWSER)
+                    step = max(1, len(raw_
