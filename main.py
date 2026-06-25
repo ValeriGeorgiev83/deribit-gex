@@ -74,18 +74,19 @@ def main(page: ft.Page):
     page.scroll = ft.ScrollMode.AUTO
     page.padding = 16
 
-    spot_txt = ft.Text("$0.00", size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_400)
+    # BULLETPROOF FIX: Swapped out the old module references for simple string colors
+    spot_txt = ft.Text("$0.00", size=24, weight=ft.FontWeight.BOLD, color="blue400")
     gex_txt = ft.Text("0.00 BTC", size=24, weight=ft.FontWeight.BOLD)
-    flip_txt = ft.Text("$0.00", size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.ORANGE_400)
-    pain_txt = ft.Text("$0.00", size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.RED_400)
+    flip_txt = ft.Text("$0.00", size=24, weight=ft.FontWeight.BOLD, color="orange400")
+    pain_txt = ft.Text("$0.00", size=24, weight=ft.FontWeight.BOLD, color="red400")
     cp_ratio_txt = ft.Text("0.00", size=24, weight=ft.FontWeight.BOLD)
-    inflows_txt = ft.Text("Loading...", size=16, color=ft.Colors.GREY_400)
+    inflows_txt = ft.Text("Loading...", size=16, color="grey400")
 
     def ui_card(title, component):
         return ft.Card(
             content=ft.Container(
                 content=ft.Column([
-                    ft.Text(title, size=12, color=ft.Colors.GREY_500, weight=ft.FontWeight.BOLD),
+                    ft.Text(title, size=12, color="grey500", weight=ft.FontWeight.BOLD),
                     component
                 ], spacing=4),
                 padding=14
@@ -98,7 +99,10 @@ def main(page: ft.Page):
             spot_txt.value = f"${metrics['spot']:,.2f}"
             gex_val = metrics['net_gamma']
             gex_txt.value = f"{gex_val:+,.2f} BTC"
-            gex_txt.color = ft.Colors.GREEN_400 if gex_val >= 0 else ft.Colors.RED_400
+            
+            # String color updates to prevent future framework update crashes
+            gex_txt.color = "green400" if gex_val >= 0 else "red400"
+            
             flip_txt.value = f"${metrics['flip']:,.0f}"
             pain_txt.value = f"${metrics['max_pain']:,.0f}"
             cp_ratio_txt.value = f"{metrics['cp_ratio']:.2f}"
@@ -108,7 +112,7 @@ def main(page: ft.Page):
     page.add(
         ft.Row([
             ft.Text("⚡ Deribit GEX Mobile", size=20, weight=ft.FontWeight.BOLD),
-            ft.IconButton(icon=ft.Icons.REFRESH, on_click=refresh_dashboard, icon_color=ft.Colors.GREEN_ACCENT)
+            ft.IconButton(icon=ft.icons.REFRESH, on_click=refresh_dashboard, icon_color="greenaccent")
         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ui_card("BTC INDEX SPOT PRICE", spot_txt),
         ui_card("NET CUMULATIVE GEX", gex_txt),
@@ -120,6 +124,5 @@ def main(page: ft.Page):
     refresh_dashboard()
 
 if __name__ == "__main__":
-    # Render cloud relies on dynamic port allocations
     port = int(os.environ.get("PORT", 8080))
     ft.app(target=main, port=port, host="0.0.0.0")
