@@ -130,7 +130,6 @@ def main(page: ft.Page):
     sup_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color="pink400")
     
     inflows_call_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color="green400")
-    # FIX: Closed parenthetical block properly below
     inflows_put_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color="red400")
     cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color="cyan300")
 
@@ -172,6 +171,7 @@ def main(page: ft.Page):
             
             page.update()
 
+    # Layout generation with verified structural parenthesis closures
     page.add(
         ft.Row([
             ft.Text("⚡ Deribit Analytics", size=20, weight=ft.FontWeight.BOLD),
@@ -179,4 +179,53 @@ def main(page: ft.Page):
         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         
         ft.Card(
-            content=ft.
+            content=ft.Container(
+                content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color="grey500"), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                padding=12
+            )
+        ),
+        
+        create_section_header("TOTAL GAMMA EXPOSURE"),
+        ft.Card(
+            content=ft.Container(
+                padding=14,
+                content=ft.Column([
+                    ui_row_item("Call Gamma", call_gex_txt),
+                    ui_row_item("Put Gamma", put_gex_txt),
+                    ui_row_item("Net Gamma", net_gex_txt),
+                    ui_row_item("Call Weight (%)", weight_txt),
+                ])
+            )
+        ),
+        
+        create_section_header("IMPORTANT LEVELS"),
+        ft.Card(
+            content=ft.Container(
+                padding=14,
+                content=ft.Column([
+                    ui_row_item("Max Pain", pain_txt),
+                    ui_row_item("Flip Zone", flip_txt),
+                    ui_row_item("Breakout Price", breakout_txt),
+                    ui_row_item("Resistance Level", res_txt),
+                    ui_row_item("Support Level", sup_txt),
+                ])
+            )
+        ),
+        
+        create_section_header("INFLOW ANALYSIS"),
+        ft.Card(
+            content=ft.Container(
+                padding=14,
+                content=ft.Column([
+                    ui_row_item("24h Call Inflows", inflows_call_txt),
+                    ui_row_item("24h Put Inflows", inflows_put_txt),
+                    ui_row_item("C/P Ratio", cp_ratio_txt),
+                ])
+            )
+        )
+    )
+    refresh_dashboard()
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    ft.app(target=main, port=port, host="0.0.0.0")
