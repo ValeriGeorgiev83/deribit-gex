@@ -228,16 +228,13 @@ def main(page: ft.Page):
                 color=ft.colors.ORANGE_400,
                 stroke_width=2.5,
                 curved=True,
-                # FIXED: Removed below_line_bgcolor completely to remove area shading
             )
         ],
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
         min_x=0,
         max_x=23,
-        # FIXED: Removed 'bottom_axis_interval' completely from here
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        # FIXED: Relocated interval directly inside ChartGridLines structure
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=260
     )
@@ -271,9 +268,10 @@ def main(page: ft.Page):
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
             # --- REDIS LOGGING ENGINE ---
+            time_now = datetime.now(timezone.utc)
             try:
                 snapshot = {
-                    "timestamp": datetime.now(timezone.utc).strftime("%m-%d %H:%M"),
+                    "timestamp": time_now.strftime("%m-%d %H:%M"),
                     "gex": round(m['net_gex_3m'], 2)
                 }
                 redis.rpush(REDIS_KEY, json.dumps(snapshot))
@@ -281,12 +279,25 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
+            # --- DYNAMIC PERSISTENT TIMESTAMPS GENERATOR ---
+            # Generate labels safely outside of data counts to force axis visible 
+            x_labels = []
+            current_utc_hour = time_now.hour
+            for i in range(0, 24, 3):
+                target_hour = (current_utc_hour - 23 + i) % 24
+                x_labels.append(
+                    ft.ChartAxisLabel(
+                        value=float(i),
+                        label=ft.Text(f"{target_hour:02d}:00", size=10, color=ft.colors.GREY_500, weight=ft.FontWeight.W_500)
+                    )
+                )
+            history_bottom_axis.labels = x_labels
+
             # --- POPULATE ROLLING 24-HOUR HISTORICAL TREND ---
             try:
                 raw_records = redis.lrange(REDIS_KEY, 0, -1)
                 if raw_records:
                     filtered_records = []
-                    time_now = datetime.now(timezone.utc)
                     
                     for record in raw_records:
                         try:
@@ -336,22 +347,6 @@ def main(page: ft.Page):
                             line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
                     
                     history_line_chart.data_series[0].data_points = line_points
-
-                    # --- CHRONOLOGICAL LABELS ---
-                    x_labels = []
-                    current_utc_hour = time_now.hour
-                    
-                    for i in range(0, 24, 3):
-                        target_hour = (current_utc_hour - 23 + i) % 24
-                        x_coord = i
-                        x_labels.append(
-                            ft.ChartAxisLabel(
-                                value=x_coord,
-                                label=ft.Text(f"{target_hour:02d}", size=10, color=ft.colors.GREY_500, weight=ft.FontWeight.W_500)
-                            )
-                        )
-                    history_bottom_axis.labels = x_labels
-
             except Exception as ex:
                 print(f"Cloud Read Failure: {ex}")
             
