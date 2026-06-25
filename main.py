@@ -190,6 +190,7 @@ def main(page: ft.Page):
 
     net_axis = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
+    
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
     history_bottom_axis = ft.ChartAxis(labels=[], labels_size=5)
 
@@ -208,15 +209,40 @@ def main(page: ft.Page):
     net_flow_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
 
-    gex_bar_chart = ft.BarChart(bar_groups=[], bottom_axis=net_axis, horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), animate=True, interactive=True, height=240)
-    abs_gex_chart = ft.BarChart(bar_groups=[], bottom_axis=abs_axis, horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), animate=True, interactive=True, height=240)
-    history_line_chart = ft.LineChart(data_series=[ft.LineChartData(data_points=[], color=ft.colors.ORANGE_400, stroke_width=2.5, curved=True)], left_axis=history_left_axis, bottom_axis=history_bottom_axis, min_x=0, max_x=21, horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3), animate=True, interactive=True, height=240)
+    gex_bar_chart = ft.BarChart(bar_groups=[], bottom_axis=net_axis, 
+                                horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
+                                vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
+                                animate=True, interactive=True, height=240)
 
-    # --- ADJUSTED TIMELINE ALIGNMENT ---
-    # padding=left=55 aligns the row with the curve's X-axis start
+    abs_gex_chart = ft.BarChart(
+        bar_groups=[], bottom_axis=abs_axis,
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        animate=True, interactive=True, height=240
+    )
+
+    history_line_chart = ft.LineChart(
+        data_series=[
+            ft.LineChartData(
+                data_points=[],
+                color=ft.colors.ORANGE_400,
+                stroke_width=2.5,
+                curved=True,
+            )
+        ],
+        left_axis=history_left_axis,
+        bottom_axis=history_bottom_axis,
+        min_x=0,
+        max_x=21,  # Set maximum range to 21 hours
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
+        animate=True, interactive=True, height=240
+    )
+
+    # Clean bottom container tailored to match a 21-hour graph grid structure perfectly
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(left=55, right=14, top=2)
+        padding=ft.padding.only(left=44, right=14, top=2)
     )
 
     def create_section_header(title):
@@ -247,59 +273,124 @@ def main(page: ft.Page):
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
+            # --- REDIS LOGGING ENGINE ---
             time_now = datetime.now(timezone.utc)
             try:
-                snapshot = {"timestamp": time_now.strftime("%m-%d %H:%M"), "gex": round(m['net_gex_3m'], 2)}
+                snapshot = {
+                    "timestamp": time_now.strftime("%m-%d %H:%M"),
+                    "gex": round(m['net_gex_3m'], 2)
+                }
                 redis.rpush(REDIS_KEY, json.dumps(snapshot))
                 redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
-            except Exception: pass
+            except Exception as ex:
+                print(f"Cloud Logging Interrupted: {ex}")
 
+            # --- GENERATE STEP LABELS ACROSS 21 HOURS ---
             current_utc_hour = time_now.hour
-            row_elements = [ft.Text(f"{(current_utc_hour - 21 + step) % 24:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500) for step in range(0, 22, 3)]
+            row_elements = []
+            for step in range(0, 22, 3):  # 8 cleanly spaced markers from -21h up to 0h
+                calculated_hour = (current_utc_hour - 21 + step) % 24
+                row_elements.append(
+                    ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
+                )
             native_timeline_container.content.controls = row_elements
 
+            # --- POPULATE ROLLING HISTORICAL TREND ---
             try:
                 raw_records = redis.lrange(REDIS_KEY, 0, -1)
                 if raw_records:
                     filtered_records = []
+                    
                     for record in raw_records:
-                        data = json.loads(record)
-                        rec_time = datetime.strptime(f"{time_now.year}-{data['timestamp']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                        if rec_time > time_now: rec_time = rec_time.replace(year=time_now.year - 1)
-                        hours_diff = (time_now - rec_time).total_seconds() / 3600.0
-                        if hours_diff <= 21.0:
-                            data['epoch'] = rec_time.timestamp()
-                            data['hours_ago'] = hours_diff
-                            filtered_records.append(data)
+                        try:
+                            data = json.loads(record)
+                            rec_time = datetime.strptime(f"{time_now.year}-{data['timestamp']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                            if rec_time > time_now:
+                                rec_time = rec_time.replace(year=time_now.year - 1)
+                                
+                            hours_diff = (time_now - rec_time).total_seconds() / 3600.0
+                            if hours_diff <= 21.0:  # Bound processing filter logic inside 21 hours
+                                data['epoch'] = rec_time.timestamp()
+                                data['hours_ago'] = hours_diff
+                                filtered_records.append(data)
+                        except Exception:
+                            continue
+
                     filtered_records.sort(key=lambda x: x['epoch'])
-                    gex_vals = [d['gex'] for d in filtered_records]
-                    bound = math.ceil(max(abs(max(gex_vals, default=50)), abs(min(gex_vals, default=-50))) / 50.0) * 50.0
-                    history_line_chart.min_y = -bound * 1000000; history_line_chart.max_y = bound * 1000000
-                    history_line_chart.data_series[0].data_points = [ft.LineChartDataPoint(21.0 - d['hours_ago'], d['gex']) for d in filtered_records]
-            except Exception: pass
+
+                    gex_in_millions = [data['gex'] / 1000000.0 for data in filtered_records]
+                    max_m = max(gex_in_millions) if gex_in_millions else 50.0
+                    min_m = min(gex_in_millions) if gex_in_millions else -50.0
+                    
+                    largest_abs = max(abs(max_m), abs(min_m), 50.0)
+                    fixed_bound = math.ceil(largest_abs / 50.0) * 50.0
+                    
+                    history_line_chart.min_y = -fixed_bound * 1000000.0
+                    history_line_chart.max_y = fixed_bound * 1000000.0
+
+                    y_labels = []
+                    current_step = -fixed_bound
+                    while current_step <= fixed_bound:
+                        sign = "+" if current_step > 0 else ""
+                        label_text = f"{sign}{int(current_step)}M" if current_step != 0 else "0"
+                        y_labels.append(
+                            ft.ChartAxisLabel(
+                                value=current_step * 1000000.0,
+                                label=ft.Text(label_text, size=10, color=ft.colors.GREY_400)
+                            )
+                        )
+                        current_step += 50.0
+                    history_left_axis.labels = y_labels
+
+                    line_points = []
+                    for data in filtered_records:
+                        x_pos = 21.0 - data['hours_ago']
+                        if 0 <= x_pos <= 21:
+                            line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
+                    
+                    history_line_chart.data_series[0].data_points = line_points
+            except Exception as ex:
+                print(f"Cloud Read Failure: {ex}")
             
+            # --- BAR CHARTS ENGINE ---
             new_groups, abs_groups, new_labels, min_dist, spot_index = [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist: min_dist, spot_index = dist, item['index']
+            
             for item in m['chart_data']:
                 val, abs_val, strike_val, is_spot = item['gex'], item['abs_gex'], item['strike'], (item['index'] == spot_index)
                 new_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val, color=ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
                 abs_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_val, color=ft.colors.YELLOW, width=12, border_radius=2)]))
+                
                 if strike_val % 2000 == 0:
                     label_color = ft.colors.BLUE_200 if is_spot else ft.colors.GREY_400
                     new_labels.append(ft.ChartAxisLabel(value=item['index'], label=ft.Text(f"{strike_val/1000:.0f}k", size=10, color=label_color, rotate=45, weight=ft.FontWeight.BOLD if is_spot else ft.FontWeight.NORMAL)))
-            gex_bar_chart.bar_groups = new_groups; net_axis.labels = new_labels; abs_gex_chart.bar_groups = abs_groups; abs_axis.labels = new_labels
+            
+            gex_bar_chart.bar_groups = new_groups
+            net_axis.labels = new_labels
+            
+            abs_gex_chart.bar_groups = abs_groups
+            abs_axis.labels = new_labels
+            
             page.update()
 
     page.add(
-        ft.Row([ft.Text("⚡ Deribit GEX Terminal", size=20, weight=ft.FontWeight.BOLD), ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        ft.Row([ft.Text("⚡ Deribit GEX Terminal", size=20, weight=ft.FontWeight.BOLD),
+                ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
+        
         create_section_header("NET GAMMA EXPOSURE (21 HRS)"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=20, top=15, bottom=0), content=ft.Stack([
-            ft.Column([history_line_chart, ft.Container(height=25)]),
-            ft.Container(content=native_timeline_container, padding=ft.padding.only(left=55, right=0), bottom=8)
-        ]))),
+        ft.Card(
+            content=ft.Container(
+                padding=ft.padding.only(left=5, right=20, top=15, bottom=15), 
+                content=ft.Column([
+                    history_line_chart,
+                    native_timeline_container
+                ], spacing=0)
+            )
+        ),
+        
         create_section_header("NET GAMMA PROFILES BY STRIKE"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart)),
         create_section_header("ABS GEX (GROSS HEDGING ACTIVITY)"),
