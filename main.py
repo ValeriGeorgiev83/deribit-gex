@@ -303,7 +303,6 @@ def main(page: ft.Page):
                         for record in raw_records[-24:]:
                             filtered_records.append(json.loads(record))
 
-                    # Convert stored base points to Millions (M) metrics
                     gex_in_millions = [data['gex'] / 1000000.0 for data in filtered_records]
                     max_m = max(gex_in_millions) if gex_in_millions else 50.0
                     min_m = min(gex_in_millions) if gex_in_millions else -50.0
@@ -328,7 +327,6 @@ def main(page: ft.Page):
                         current_step += 50.0
                     history_left_axis.labels = y_labels
 
-                    # --- CHRONOLOGICAL DATA LINE GENERATION (LEFT TO RIGHT) ---
                     line_points = []
                     total_records = len(filtered_records)
                     
@@ -338,13 +336,11 @@ def main(page: ft.Page):
                     
                     history_line_chart.data_series[0].data_points = line_points
 
-                    # --- CORRECTED CHRONOLOGICAL LABELS (OLD HOURS LEFT -> CURRENT HOUR RIGHT) ---
+                    # --- CHRONOLOGICAL LABELS (LEFT TO RIGHT SHIFT FIX) ---
                     x_labels = []
                     current_utc_hour = time_now.hour
                     
-                    # Instead of calculating backward backwards, we walk forward from index 0 (24h ago) to index 23 (now)
                     for i in range(0, 24, 3):
-                        # 24 hours ago corresponds to x_coord=0. We add hours to progress towards the current hour at x_coord=23.
                         target_hour = (current_utc_hour - 24 + i) % 24
                         x_coord = (i / 24) * 23
                         
@@ -360,4 +356,49 @@ def main(page: ft.Page):
                 print(f"Cloud Read Failure: {ex}")
             
             # --- BAR CHARTS ENGINE ---
-            new_groups, abs_groups, new_labels, min_dist, spot_index
+            new_groups, abs_groups, new_labels, min_dist, spot_index = [], [], [], float('inf'), -1
+            for item in m['chart_data']:
+                dist = abs(item['strike'] - m['spot'])
+                if dist < min_dist: min_dist, spot_index = dist, item['index']
+            
+            for item in m['chart_data']:
+                val, abs_val, strike_val, is_spot = item['gex'], item['abs_gex'], item['strike'], (item['index'] == spot_index)
+                new_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val, color=ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
+                abs_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_val, color=ft.colors.YELLOW, width=12, border_radius=2)]))
+                
+                if strike_val % 2000 == 0:
+                    label_color = ft.colors.BLUE_200 if is_spot else ft.colors.GREY_400
+                    new_labels.append(ft.ChartAxisLabel(value=item['index'], label=ft.Text(f"{strike_val/1000:.0f}k", size=10, color=label_color, rotate=45, weight=ft.FontWeight.BOLD if is_spot else ft.FontWeight.NORMAL)))
+            
+            gex_bar_chart.bar_groups = new_groups
+            net_axis.labels = new_labels
+            
+            abs_gex_chart.bar_groups = abs_groups
+            abs_axis.labels = new_labels
+            
+            page.update()
+
+    page.add(
+        ft.Row([ft.Text("⚡ Deribit GEX Terminal", size=20, weight=ft.FontWeight.BOLD),
+                ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
+        
+        create_section_header("NET GAMMA EXPOSURE (24 HRS)"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=20, top=15, bottom=20), content=history_line_chart)),
+        
+        create_section_header("NET GAMMA PROFILES BY STRIKE"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart)),
+        create_section_header("ABS GEX (GROSS HEDGING ACTIVITY)"),
+        ft.Card(content=ft.Container(padding=15, content=abs_gex_chart)),
+        create_section_header("TOTAL GAMMA EXPOSURE"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Call Gamma", call_gex_txt), ui_row_item("Put Gamma", put_gex_txt), ui_row_item("Net Gamma", net_gex_txt), ui_row_item("Call Weight (%)", weight_txt)]))),
+        create_section_header("IMPORTANT LEVELS"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
+        create_section_header("INFLOW ANALYSIS"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("24h Call Inflows", inflows_call_txt), ui_row_item("24h Put Inflows", outflows_put_txt), ui_row_item("Net Volume Bias", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
+    )
+    refresh_dashboard()
+
+if __name__ == "__main__":
+    # Standard server bind execution configuration
+    ft.app(target=main, port=int(os.environ.get("PORT", 8080)), host="0.0.0.0", view=None)
