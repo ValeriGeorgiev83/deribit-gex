@@ -119,15 +119,16 @@ def fetch_deribit_gex(currency="BTC"):
     put_oi_3m = put_df_3m['oi'].sum()
     cp_ratio = put_oi_3m / call_oi_3m if call_oi_3m > 0 else 0
 
-    center_spot_500 = round(spot_price / 500.0) * 500
-    lower_bound = center_spot_500 - 5000
-    upper_bound = center_spot_500 + 5000
+    # Clean $1000 anchoring: +/- $8000 from center spot
+    center_spot_1k = round(spot_price / 1000.0) * 1000
+    lower_bound = center_spot_1k - 8000
+    upper_bound = center_spot_1k + 8000
     
     df_chart_range = df_3m[(df_3m['strike'] >= lower_bound) & (df_3m['strike'] <= upper_bound)].copy()
-    df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 500.0) * 500)
+    df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     
     bucket_gex = df_chart_range.groupby('strike_bucket')['gex'].sum()
-    target_buckets = list(range(int(lower_bound), int(upper_bound) + 500, 500))
+    target_buckets = list(range(int(lower_bound), int(upper_bound) + 1000, 1000))
     chart_matrix = []
     
     for idx, b_strike in enumerate(target_buckets):
@@ -186,28 +187,29 @@ def main(page: ft.Page):
     net_flow_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
 
-    # Tracks the index of the spot target dynamically
-    spot_index_target = [-1]
-
-    # Custom lambda-like function to pinpoint ONLY the single spot index
-    def check_vertical_line(value):
-        return int(round(value)) == spot_index_target[0]
-
     gex_bar_chart = ft.BarChart(
         bar_groups=[],
-        bottom_axis=ft.ChartAxis(labels=[], labels_size=22),
-        horizontal_grid_lines=ft.ChartGridLines(
-            color=ft.colors.GREY_800,
-            width=0.5
-        ),
-        vertical_grid_lines=ft.ChartGridLines(
-            color=ft.colors.YELLOW_ACCENT_400,
-            width=2.0,
-            interval=1,
-            check_handler=check_vertical_line
-        ),
+        bottom_axis=ft.ChartAxis(labels=[], labels_size=24),
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         animate=True,
         interactive=True,
+        height=240
+    )
+
+    # Dynamic line layer overlay inside stack container layout
+    spot_line_overlay = ft.Container(
+        width=2.0,
+        bgcolor=ft.colors.YELLOW_ACCENT_400,
+        visible=False,
+        margin=ft.margin.only(left=0)
+    )
+
+    chart_stack_container = ft.Stack(
+        controls=[
+            gex_bar_chart,
+            spot_line_overlay
+        ],
         height=240
     )
 
@@ -252,27 +254,25 @@ def main(page: ft.Page):
             new_labels = []
             
             min_dist = float('inf')
-            found_idx = -1
+            spot_index_target = -1
             
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist:
                     min_dist = dist
-                    found_idx = item['index']
-            
-            # Update mutable index wrapper safely
-            spot_index_target[0] = found_idx
+                    spot_index_target = item['index']
 
             max_val = max([abs(item['gex']) for item in m['chart_data']]) if m['chart_data'] else 1.0
             if max_val == 0: max_val = 1.0
-            
             gex_bar_chart.horizontal_grid_lines.interval = max_val / 3.0
+            
+            total_items = len(m['chart_data'])
             
             for item in m['chart_data']:
                 val = item['gex']
                 bar_color = ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400
                 strike_val = item['strike']
-                is_spot_bar = (item['index'] == spot_index_target[0])
+                is_spot_bar = (item['index'] == spot_index_target)
                 
                 new_groups.append(
                     ft.BarChartGroup(
@@ -282,20 +282,21 @@ def main(page: ft.Page):
                                 from_y=0,
                                 to_y=val,
                                 color=bar_color,
-                                width=8,
+                                width=12,
                                 border_radius=2
                             )
                         ]
                     )
                 )
                 
+                # Show label cleanly on every $2000 increment to keep layout tidy
                 if strike_val % 2000 == 0:
                     new_labels.append(
                         ft.ChartAxisLabel(
                             value=item['index'],
                             label=ft.Text(
                                 f"{strike_val/1000:.0f}k", 
-                                size=9, 
+                                size=10, 
                                 color=ft.colors.YELLOW_ACCENT_400 if is_spot_bar else ft.colors.GREY_400, 
                                 rotate=45,
                                 weight=ft.FontWeight.BOLD if is_spot_bar else ft.FontWeight.NORMAL
@@ -305,6 +306,18 @@ def main(page: ft.Page):
             
             gex_bar_chart.bar_groups = new_groups
             gex_bar_chart.bottom_axis.labels = new_labels
+
+            # Aligning the visual line over the chart canvas coordinates cleanly via stack scaling offset calculation
+            if spot_index_target != -1 and total_items > 1:
+                # Approximate container margins left offsets dynamically across the chart width window frame
+                pct = spot_index_target / (total_items - 1)
+                spot_line_overlay.margin = ft.margin.only(left=38 + (pct * 295)) # Core offset bounding anchor
+                spot_line_overlay.height = 195
+                spot_line_overlay.top = 10
+                spot_line_overlay.visible = True
+            else:
+                spot_line_overlay.visible = False
+            
             page.update()
 
     page.add(
@@ -318,11 +331,11 @@ def main(page: ft.Page):
                 padding=12
             )
         ),
-        create_section_header("NET GAMMA PROFILES BY STRIKE (<= 3M)"),
+        create_section_header("NET GAMMA PROFILES BY STRIKE (EVEN $1000 INTERVALS)"),
         ft.Card(
             content=ft.Container(
-                padding=ft.padding.only(left=5, right=15, top=20, bottom=15),
-                content=gex_bar_chart
+                padding=ft.padding.only(left=5, right=15, top=15, bottom=15),
+                content=chart_stack_container
             )
         ),
         create_section_header("TOTAL GAMMA EXPOSURE (<= 3M)"),
