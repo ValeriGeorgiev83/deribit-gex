@@ -186,6 +186,13 @@ def main(page: ft.Page):
     net_flow_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
 
+    # Tracks the index of the spot target dynamically
+    spot_index_target = [-1]
+
+    # Custom lambda-like function to pinpoint ONLY the single spot index
+    def check_vertical_line(value):
+        return int(round(value)) == spot_index_target[0]
+
     gex_bar_chart = ft.BarChart(
         bar_groups=[],
         bottom_axis=ft.ChartAxis(labels=[], labels_size=22),
@@ -194,8 +201,10 @@ def main(page: ft.Page):
             width=0.5
         ),
         vertical_grid_lines=ft.ChartGridLines(
-            color=ft.colors.GREY_800,
-            width=0.5
+            color=ft.colors.YELLOW_ACCENT_400,
+            width=2.0,
+            interval=1,
+            check_handler=check_vertical_line
         ),
         animate=True,
         interactive=True,
@@ -243,56 +252,40 @@ def main(page: ft.Page):
             new_labels = []
             
             min_dist = float('inf')
-            spot_index_target = -1
+            found_idx = -1
             
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist:
                     min_dist = dist
-                    spot_index_target = item['index']
+                    found_idx = item['index']
+            
+            # Update mutable index wrapper safely
+            spot_index_target[0] = found_idx
 
-            # Dynamically handle grid spacing based on data scale
             max_val = max([abs(item['gex']) for item in m['chart_data']]) if m['chart_data'] else 1.0
             if max_val == 0: max_val = 1.0
             
-            # Normalizing intervals securely
             gex_bar_chart.horizontal_grid_lines.interval = max_val / 3.0
-            gex_bar_chart.vertical_grid_lines.interval = 2.0  # Clear grid layout line every 2 steps ($1000)
             
             for item in m['chart_data']:
                 val = item['gex']
                 bar_color = ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400
                 strike_val = item['strike']
-                is_spot_bar = (item['index'] == spot_index_target)
-                
-                rods = []
-                # Core metric bar
-                rods.append(
-                    ft.BarChartRod(
-                        from_y=0,
-                        to_y=val,
-                        color=bar_color,
-                        width=8,
-                        border_radius=2
-                    )
-                )
-                
-                # If this index is closest to spot, inject an additional vivid full-height yellow tracker rod inside the group!
-                if is_spot_bar:
-                    rods.append(
-                        ft.BarChartRod(
-                            from_y=-max_val,
-                            to_y=max_val,
-                            color=ft.colors.YELLOW_ACCENT_400,
-                            width=2,
-                            border_radius=0
-                        )
-                    )
+                is_spot_bar = (item['index'] == spot_index_target[0])
                 
                 new_groups.append(
                     ft.BarChartGroup(
                         x=item['index'],
-                        bar_rods=rods
+                        bar_rods=[
+                            ft.BarChartRod(
+                                from_y=0,
+                                to_y=val,
+                                color=bar_color,
+                                width=8,
+                                border_radius=2
+                            )
+                        ]
                     )
                 )
                 
