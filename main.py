@@ -13,7 +13,7 @@ redis = Redis(
     token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
 )
 REDIS_KEY = "deribit_gex_3d_history"
-MAX_HISTORY_POINTS = 2500
+MAX_HISTORY_POINTS = 2500  # Over a week of data sampled every 5 minutes
 
 def fetch_deribit_gex(currency="BTC"):
     """Fetches and calculates GEX and market flow data from Deribit."""
@@ -267,6 +267,7 @@ def main(page: ft.Page):
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
+            # --- REDIS LOGGING ENGINE ---
             try:
                 snapshot = {
                     "timestamp": datetime.now(timezone.utc).strftime("%m-%d %H:%M"),
@@ -277,29 +278,49 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
+            # --- POPULATE ROLLING 60-MIN HISTORICAL TREND ---
             try:
                 raw_records = redis.lrange(REDIS_KEY, 0, -1)
                 if raw_records:
                     line_points = []
                     hist_labels = []
-                    step = max(1, len(raw_records) // 6)
+                    filtered_records = []
+                    time_now = datetime.now(timezone.utc)
                     
-                    for idx, record in enumerate(raw_records):
-                        data = json.loads(record)
+                    for record in raw_records:
+                        try:
+                            data = json.loads(record)
+                            rec_time = datetime.strptime(f"{time_now.year}-{data['timestamp']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                            
+                            # Filter window to exact 60-minute trailing boundary
+                            minutes_diff = (time_now - rec_time).total_seconds() / 60.0
+                            if minutes_diff <= 60.0:
+                                filtered_records.append(data)
+                        except Exception:
+                            continue
+
+                    # Fallback Engine: Keep last 5 points to keep dashboard operational if cron is freshly spinning up
+                    if len(filtered_records) < 2:
+                        for record in raw_records[-5:]:
+                            filtered_records.append(json.loads(record))
+
+                    for idx, data in enumerate(filtered_records):
                         line_points.append(ft.LineChartDataPoint(x=idx, y=data['gex']))
                         
-                        if idx % step == 0 or idx == len(raw_records) - 1:
+                        if len(filtered_records) <= 6 or idx % 2 == 0 or idx == len(filtered_records) - 1:
                             hist_labels.append(
                                 ft.ChartAxisLabel(
                                     value=idx,
-                                    label=ft.Text(data['timestamp'], size=9, color=ft.colors.GREY_500, rotate=30)
+                                    label=ft.Text(data['timestamp'].split(' ')[1], size=9, color=ft.colors.GREY_500, rotate=30)
                                 )
                             )
+                            
                     history_line_chart.data_series[0].data_points = line_points
                     history_axis.labels = hist_labels
             except Exception as ex:
                 print(f"Cloud Read Failure: {ex}")
             
+            # --- BAR CHARTS ENGINE ---
             new_groups, abs_groups, new_labels, min_dist, spot_index = [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
@@ -327,7 +348,7 @@ def main(page: ft.Page):
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
-        create_section_header("SHORT-TERM NET GEX HISTORICAL TREND (<=3D EXP)"),
+        create_section_header("ROLLING 60-MIN GEX HISTORICAL TREND (<=3D EXP)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=25), content=history_line_chart)),
         
         create_section_header("NET GAMMA PROFILES BY STRIKE"),
