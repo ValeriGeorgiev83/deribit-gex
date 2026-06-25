@@ -6,6 +6,7 @@ import math
 from datetime import datetime, timezone
 
 def fetch_deribit_gex(currency="BTC"):
+    """Fetches and calculates GEX and market flow data from Deribit."""
     try:
         idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
         idx_res = requests.get(idx_url).json()
@@ -147,43 +148,25 @@ def fetch_deribit_gex(currency="BTC"):
     
     for idx, b_strike in enumerate(target_buckets):
         gex_val = bucket_gex.get(b_strike, 0.0)
-        chart_matrix.append({
-            "index": idx,
-            "strike": b_strike,
-            "gex": gex_val
-        })
+        chart_matrix.append({"index": idx, "strike": b_strike, "gex": gex_val})
 
     return {
-        "spot": spot_price,
-        "call_gex": call_gex,
-        "put_gex": put_gex,
-        "net_gex": net_gex,
-        "call_weight": call_weight_pct,
-        "max_pain": max_pain_level,
-        "flip": flip_level,
-        "breakout": breakout_price,
-        "resistance": resistance_level,
-        "support": support_level,
-        "call_inflow": signed_call_inflow,
-        "put_inflow": signed_put_inflow,
-        "net_flow": net_flow,
-        "cp_ratio": cp_ratio,
-        "chart_data": chart_matrix
+        "spot": spot_price, "call_gex": call_gex, "put_gex": put_gex, "net_gex": net_gex,
+        "call_weight": call_weight_pct, "max_pain": max_pain_level, "flip": flip_level,
+        "breakout": breakout_price, "resistance": resistance_level, "support": support_level,
+        "call_inflow": signed_call_inflow, "put_inflow": signed_put_inflow,
+        "net_flow": net_flow, "cp_ratio": cp_ratio, "chart_data": chart_matrix
     }
 
 def fmt_gex(val):
     sign = "+" if val >= 0 else "-"
     abs_val = abs(val)
-    if abs_val >= 1000:
-        return f"{sign}{abs_val/1000:.1f}k"
-    return f"{sign}{abs_val:.1f}"
+    return f"{sign}{abs_val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{abs_val:.1f}"
 
 def fmt_inflow(val):
     sign = "+" if val >= 0 else ""
     abs_val = abs(val)
-    if abs_val >= 1000:
-        return f"{sign}{val/1000:.1f}k"
-    return f"{sign}{val:.0f}"
+    return f"{sign}{val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{val:.0f}"
 
 def main(page: ft.Page):
     page.title = "Deribit DEX Terminal"
@@ -191,47 +174,32 @@ def main(page: ft.Page):
     page.scroll = ft.ScrollMode.AUTO
     page.padding = 14
 
+    # UI Components
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
     put_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.RED_400)
     net_gex_txt = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
     weight_txt = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_300)
-    
     pain_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600)
     flip_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.ORANGE_400)
     breakout_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_ACCENT)
     res_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_300)
     sup_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PINK_400)
-    
     inflows_call_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     outflows_put_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     net_flow_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
 
-    gex_bar_chart = ft.BarChart(
-        bar_groups=[],
-        bottom_axis=ft.ChartAxis(labels=[], labels_size=24),
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        animate=True,
-        interactive=True,
-        height=240
-    )
+    gex_bar_chart = ft.BarChart(bar_groups=[], bottom_axis=ft.ChartAxis(labels=[], labels_size=24), 
+                                horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
+                                vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
+                                animate=True, interactive=True, height=240)
 
-    def create_section_header(title_name):
-        return ft.Container(
-            content=ft.Text(title_name, size=13, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_500),
-            margin=ft.margin.only(top=15, bottom=5)
-        )
+    def create_section_header(title):
+        return ft.Container(content=ft.Text(title, size=13, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_500), margin=ft.margin.only(top=15, bottom=5))
 
     def ui_row_item(label, component):
-        return ft.Container(
-            content=ft.Row([
-                ft.Text(label, size=14, color=ft.colors.GREY_300),
-                component
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            padding=ft.padding.symmetric(vertical=4)
-        )
+        return ft.Container(content=ft.Row([ft.Text(label, size=14, color=ft.colors.GREY_300), component], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=ft.padding.symmetric(vertical=4))
 
     def refresh_dashboard(e=None):
         m = fetch_deribit_gex("BTC")
@@ -242,141 +210,50 @@ def main(page: ft.Page):
             net_gex_txt.value = fmt_gex(m['net_gex'])
             net_gex_txt.color = ft.colors.GREEN_400 if m['net_gex'] >= 0 else ft.colors.RED_400
             weight_txt.value = f"{m['call_weight']:.1f}%"
-            
             pain_txt.value = f"${m['max_pain']:,.0f}"
             flip_txt.value = f"${m['flip']:,.0f}"
             breakout_txt.value = f"${m['breakout']:,.0f}"
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}"
-            
             inflows_call_txt.value = fmt_inflow(m['call_inflow'])
             inflows_call_txt.color = ft.colors.GREEN_400 if m['call_inflow'] >= 0 else ft.colors.RED_400
-            
             outflows_put_txt.value = fmt_inflow(m['put_inflow'])
             outflows_put_txt.color = ft.colors.GREEN_400 if m['put_inflow'] >= 0 else ft.colors.RED_400
-
             net_flow_txt.value = fmt_gex(m['net_flow'])
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            new_groups = []
-            new_labels = []
-            
-            min_dist = float('inf')
-            spot_index_target = -1
-            
+            new_groups, new_labels, min_dist, spot_index = [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
-                if dist < min_dist:
-                    min_dist = dist
-                    spot_index_target = item['index']
-
+                if dist < min_dist: min_dist, spot_index = dist, item['index']
             max_val = max([abs(item['gex']) for item in m['chart_data']]) if m['chart_data'] else 1.0
-            if max_val == 0: max_val = 1.0
-            gex_bar_chart.horizontal_grid_lines.interval = max_val / 3.0
+            gex_bar_chart.horizontal_grid_lines.interval = (max_val / 3.0) or 1.0
             
             for item in m['chart_data']:
-                val = item['gex']
-                bar_color = ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400
-                strike_val = item['strike']
-                is_spot_bar = (item['index'] == spot_index_target)
-                
-                new_groups.append(
-                    ft.BarChartGroup(
-                        x=item['index'],
-                        bar_rods=[
-                            ft.BarChartRod(
-                                from_y=0,
-                                to_y=val,
-                                color=bar_color,
-                                width=12,
-                                border_radius=2
-                            )
-                        ]
-                    )
-                )
-                
+                val, strike_val, is_spot = item['gex'], item['strike'], (item['index'] == spot_index)
+                new_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val, color=ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
                 if strike_val % 2000 == 0:
-                    new_labels.append(
-                        ft.ChartAxisLabel(
-                            value=item['index'],
-                            label=ft.Text(
-                                f"{strike_val/1000:.0f}k", 
-                                size=10, 
-                                color=ft.colors.BLUE_200 if is_spot_bar else ft.colors.GREY_400, 
-                                rotate=45,
-                                weight=ft.FontWeight.BOLD if is_spot_bar else ft.FontWeight.NORMAL
-                            )
-                        )
-                    )
+                    new_labels.append(ft.ChartAxisLabel(value=item['index'], label=ft.Text(f"{strike_val/1000:.0f}k", size=10, color=ft.colors.BLUE_200 if is_spot else ft.colors.GREY_400, rotate=45, weight=ft.FontWeight.BOLD if is_spot else ft.FontWeight.NORMAL)))
             
             gex_bar_chart.bar_groups = new_groups
             gex_bar_chart.bottom_axis.labels = new_labels
             page.update()
 
     page.add(
-        ft.Row([
-            ft.Text("⚡ Deribit DEX Terminal", size=20, weight=ft.FontWeight.BOLD),
-            ft.IconButton(icon=ft.icons.REFRESH, on_click=refresh_dashboard, icon_color=ft.colors.GREEN_ACCENT)
-        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        ft.Card(
-            content=ft.Container(
-                content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                padding=12
-            )
-        ),
+        ft.Row([ft.Text("⚡ Deribit DEX Terminal", size=20, weight=ft.FontWeight.BOLD),
+                ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         create_section_header("NET GAMMA PROFILES BY STRIKE"),
-        ft.Card(
-            content=ft.Container(
-                padding=ft.padding.only(left=5, right=15, top=15, bottom=15),
-                content=gex_bar_chart
-            )
-        ),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart)),
         create_section_header("TOTAL GAMMA EXPOSURE"),
-        ft.Card(
-            content=ft.Container(
-                padding=14,
-                content=ft.Column([
-                    ui_row_item("Call Gamma", call_gex_txt),
-                    ui_row_item("Put Gamma", put_gex_txt),
-                    ui_row_item("Net Gamma", net_gex_txt),
-                    ui_row_item("Call Weight (%)", weight_txt),
-                ])
-            )
-        ),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Call Gamma", call_gex_txt), ui_row_item("Put Gamma", put_gex_txt), ui_row_item("Net Gamma", net_gex_txt), ui_row_item("Call Weight (%)", weight_txt)]))),
         create_section_header("IMPORTANT LEVELS"),
-        ft.Card(
-            content=ft.Container(
-                padding=14,
-                content=ft.Column([
-                    ui_row_item("Max Pain", pain_txt),
-                    ui_row_item("Flip Zone", flip_txt),
-                    ui_row_item("Breakout Price", breakout_txt),
-                    ui_row_item("Resistance Level", res_txt),
-                    ui_row_item("Support Level", sup_txt),
-                ])
-            )
-        ),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("INFLOW ANALYSIS"),
-        ft.Card(
-            content=ft.Container(
-                padding=14,
-                content=ft.Column([
-                    ui_row_item("24h Call Inflows", inflows_call_txt),
-                    ui_row_item("24h Put Inflows", outflows_put_txt),
-                    ui_row_item("Net Volume Bias", net_flow_txt),
-                    ui_row_item("C/P Ratio", cp_ratio_txt),
-                ])
-            )
-        )
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("24h Call Inflows", inflows_call_txt), ui_row_item("24h Put Inflows", outflows_put_txt), ui_row_item("Net Volume Bias", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
     )
     refresh_dashboard()
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    ft.app(
-        target=main, 
-        port=port, 
-        host="0.0.0.0", 
-        view=ft.AppView.WEB_BROWSER
-    )
+    ft.app(target=main, port=int(os.environ.get("PORT", 8080)), host="0.0.0.0", view=ft.AppView.WEB_BROWSER)
