@@ -5,15 +5,15 @@ import requests
 import pandas as pd
 import flet as ft
 from datetime import datetime, timezone
-from upstash_redis import Redis
 
 # Initialize Upstash Redis
+from upstash_redis import Redis
 redis = Redis(
     url="https://large-ghost-131173.upstash.io", 
     token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
 )
 REDIS_KEY = "deribit_gex_3d_history"
-MAX_HISTORY_POINTS = 2500  # Over a week of data sampled every 5 minutes
+MAX_HISTORY_POINTS = 2500
 
 def fetch_deribit_gex(currency="BTC"):
     """Fetches and calculates GEX and market flow data from Deribit."""
@@ -194,7 +194,11 @@ def main(page: ft.Page):
 
     net_axis = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
-    history_axis = ft.ChartAxis(labels=[], labels_size=24)
+    
+    # Left Vertical Axis configuration for historical trend
+    history_left_axis = ft.ChartAxis(labels=[], labels_size=40)
+    # Bottom Horizontal Axis configuration for historical trend
+    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
@@ -233,10 +237,11 @@ def main(page: ft.Page):
                 below_line_bgcolor=ft.colors.with_opacity(0.05, ft.colors.CYAN_400),
             )
         ],
-        bottom_axis=history_axis,
+        left_axis=history_left_axis,
+        bottom_axis=history_bottom_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        animate=True, interactive=True, height=240
+        animate=True, interactive=True, height=260
     )
 
     def create_section_header(title):
@@ -283,7 +288,6 @@ def main(page: ft.Page):
                 raw_records = redis.lrange(REDIS_KEY, 0, -1)
                 if raw_records:
                     line_points = []
-                    hist_labels = []
                     filtered_records = []
                     time_now = datetime.now(timezone.utc)
                     
@@ -299,24 +303,56 @@ def main(page: ft.Page):
                         except Exception:
                             continue
 
-                    # Fallback Engine: Keep last 5 points to keep dashboard operational if cron is freshly spinning up
+                    # Fallback Engine: Keep last 5 points if cron is freshly spinning up
                     if len(filtered_records) < 2:
                         for record in raw_records[-5:]:
                             filtered_records.append(json.loads(record))
 
+                    # Parse values out to define clear absolute boundaries for the y-axis
+                    gex_values = [data['gex'] for data in filtered_records]
+                    max_val = max(gex_values) if gex_values else 1000.0
+                    min_val = min(gex_values) if gex_values else -1000.0
+                    
+                    # Force boundaries to span across the zero baseline symmetrically
+                    abs_bound = max(abs(max_val), abs(min_val), 100.0) * 1.15
+                    history_line_chart.min_y = -abs_bound
+                    history_line_chart.max_y = abs_bound
+
+                    # Formulate structured left Y-axis divisions labeled in 'k' notation
+                    y_labels = []
+                    divisions = [-abs_bound, -abs_bound * 0.5, 0.0, abs_bound * 0.5, abs_bound]
+                    for div in divisions:
+                        y_labels.append(
+                            ft.ChartAxisLabel(
+                                value=div,
+                                label=ft.Text(f"{div/1000:.1f}k" if div != 0 else "0", size=10, color=ft.colors.GREY_400)
+                            )
+                        )
+                    history_left_axis.labels = y_labels
+
+                    # Construct precise start/stop anchors for the bottom X-axis
+                    x_labels = []
                     for idx, data in enumerate(filtered_records):
                         line_points.append(ft.LineChartDataPoint(x=idx, y=data['gex']))
                         
-                        if len(filtered_records) <= 6 or idx % 2 == 0 or idx == len(filtered_records) - 1:
-                            hist_labels.append(
+                        # Only draw textual labels at the exact first and last data frame indices
+                        if idx == 0:
+                            x_labels.append(
                                 ft.ChartAxisLabel(
                                     value=idx,
-                                    label=ft.Text(data['timestamp'].split(' ')[1], size=9, color=ft.colors.GREY_500, rotate=30)
+                                    label=ft.Text(f"Start: {data['timestamp'].split(' ')[1]}", size=10, color=ft.colors.BLUE_300, weight=ft.FontWeight.BOLD)
+                                )
+                            )
+                        elif idx == len(filtered_records) - 1:
+                            x_labels.append(
+                                ft.ChartAxisLabel(
+                                    value=idx,
+                                    label=ft.Text(f"Latest: {data['timestamp'].split(' ')[1]}", size=10, color=ft.colors.CYAN_300, weight=ft.FontWeight.BOLD)
                                 )
                             )
                             
                     history_line_chart.data_series[0].data_points = line_points
-                    history_axis.labels = hist_labels
+                    history_bottom_axis.labels = x_labels
             except Exception as ex:
                 print(f"Cloud Read Failure: {ex}")
             
@@ -349,7 +385,7 @@ def main(page: ft.Page):
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
         create_section_header("ROLLING 60-MIN GEX HISTORICAL TREND (<=3D EXP)"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=25), content=history_line_chart)),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=20, top=15, bottom=20), content=history_line_chart)),
         
         create_section_header("NET GAMMA PROFILES BY STRIKE"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart)),
