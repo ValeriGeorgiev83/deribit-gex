@@ -186,22 +186,17 @@ def main(page: ft.Page):
     net_flow_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
 
-    # State tracking variables for explicit precise rendering
     v_lines_map = {}
     spot_index_target = -1
 
     def vertical_grid_eval(val):
-        idx = int(val)
-        # Highlight spot price index line as yellow, or normal $1k intervals as grey
-        if idx == spot_index_target:
-            return True
-        return v_lines_map.get(idx, False)
+        return v_lines_map.get(int(val), False)
 
     gex_bar_chart = ft.BarChart(
         bar_groups=[],
         bottom_axis=ft.ChartAxis(labels=[], labels_size=22),
         horizontal_grid_lines=ft.ChartGridLines(
-            color=ft.colors.PURPLE_A100,
+            color=ft.colors.GREY_800,
             width=1.0,
             interval=50000
         ),
@@ -258,7 +253,6 @@ def main(page: ft.Page):
             new_labels = []
             v_lines_map.clear()
             
-            # Dynamically determine closest bar index to underlying spot price
             min_dist = float('inf')
             spot_index_target = -1
             
@@ -267,22 +261,17 @@ def main(page: ft.Page):
                 if dist < min_dist:
                     min_dist = dist
                     spot_index_target = item['index']
-
-            # Rescale the internal grid line boundaries to align with your option metrics
-            max_val = max([abs(item['gex']) for item in m['chart_data']]) if m['chart_data'] else 1.0
-            if max_val == 0: max_val = 1.0
-            
-            # Map standard visual target bars inside your chart grid configuration
-            gex_bar_chart.horizontal_grid_lines.interval = max_val * 0.65
             
             for item in m['chart_data']:
                 val = item['gex']
                 bar_color = ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400
                 strike_val = item['strike']
                 
-                # Assign vertical grid logic 
                 if strike_val % 1000 == 0:
                     v_lines_map[item['index']] = True
+                
+                # Check line parameters for special spot vertical accent line
+                is_spot_bar = (item['index'] == spot_index_target)
                 
                 new_groups.append(
                     ft.BarChartGroup(
@@ -291,8 +280,8 @@ def main(page: ft.Page):
                             ft.BarChartRod(
                                 from_y=0,
                                 to_y=val,
-                                color=bar_color,
-                                width=10,
+                                color=ft.colors.YELLOW_ACCENT_400 if is_spot_bar else bar_color,
+                                width=11 if is_spot_bar else 9,
                                 border_radius=2
                             )
                         ]
@@ -303,19 +292,12 @@ def main(page: ft.Page):
                     new_labels.append(
                         ft.ChartAxisLabel(
                             value=item['index'],
-                            label=ft.Text(f"{strike_val/1000:.0f}k", size=9, color=ft.colors.GREY_400, rotate=45)
+                            label=ft.Text(f"{strike_val/1000:.0f}k", size=9, color=ft.colors.YELLOW_ACCENT_400 if is_spot_bar else ft.colors.GREY_400, rotate=45, weight=ft.FontWeight.BOLD if is_spot_bar else ft.FontWeight.NORMAL)
                         )
                     )
             
-            # Apply dynamic changes to the grid rendering engine
             gex_bar_chart.bar_groups = new_groups
             gex_bar_chart.bottom_axis.labels = new_labels
-            
-            # Explicitly override the vertical line style for the spot price index
-            if spot_index_target != -1:
-                gex_bar_chart.vertical_grid_lines.color = ft.colors.YELLOW_accent_700
-                gex_bar_chart.vertical_grid_lines.width = 1.4
-            
             page.update()
 
     page.add(
