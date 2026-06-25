@@ -141,16 +141,16 @@ def fetch_deribit_gex(currency="BTC"):
         df_chart_range = df_3m[(df_3m['strike'] >= lower_bound) & (df_3m['strike'] <= upper_bound)].copy()
         
     df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
-    # MODIFIED: Calculate Gross Gamma contribution per row
-    df_chart_range['abs_gex_contribution'] = df_chart_range['gex'].abs()
     
+    # Calculate Gross Gamma (Sum of absolute GEX contributions)
+    df_chart_range['abs_gex_contribution'] = df_chart_range['gex'].abs()
     bucket_data = df_chart_range.groupby('strike_bucket').agg({'gex': 'sum', 'abs_gex_contribution': 'sum'})
+    
     target_buckets = list(range(int(lower_bound), int(upper_bound) + 1000, 1000))
     chart_matrix = []
     
     for idx, b_strike in enumerate(target_buckets):
         gex_val = bucket_data.get('gex', {}).get(b_strike, 0.0)
-        # Gross Gamma: total hedging effort regardless of net direction
         abs_gex_val = bucket_data.get('abs_gex_contribution', {}).get(b_strike, 0.0)
         chart_matrix.append({"index": idx, "strike": b_strike, "gex": gex_val, "abs_gex": abs_gex_val})
 
@@ -173,7 +173,7 @@ def fmt_inflow(val):
     return f"{sign}{val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{val:.0f}"
 
 def main(page: ft.Page):
-    page.title = "Deribit DEX Terminal"
+    page.title = "Deribit GEX Terminal"
     page.theme_mode = ft.ThemeMode.DARK
     page.scroll = ft.ScrollMode.AUTO
     page.padding = 14
@@ -243,15 +243,19 @@ def main(page: ft.Page):
                 new_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val, color=ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
                 abs_points.append(ft.LineChartDataPoint(item['index'], abs_val))
                 if strike_val % 2000 == 0:
-                    new_labels.append(ft.ChartAxisLabel(value=item['index'], label=ft.Text(f"{strike_val/1000:.0f}k", size=10, color=ft.colors.BLUE_200 if is_spot else ft.colors.GREY_400, rotate=45, weight=ft.FontWeight.BOLD if is_spot else ft.FontWeight.NORMAL)))
+                    label_color = ft.colors.BLUE_200 if is_spot else ft.colors.GREY_400
+                    new_labels.append(ft.ChartAxisLabel(value=item['index'], label=ft.Text(f"{strike_val/1000:.0f}k", size=10, color=label_color, rotate=45, weight=ft.FontWeight.BOLD if is_spot else ft.FontWeight.NORMAL)))
             
             gex_bar_chart.bar_groups = new_groups
             gex_bar_chart.bottom_axis.labels = new_labels
+            
             abs_gex_chart.data_series = [ft.LineChartData(data_points=abs_points, color=ft.colors.YELLOW, curved=True, stroke_width=3, below_line_bgcolor=ft.colors.with_opacity(0.2, ft.colors.YELLOW))]
+            abs_gex_chart.bottom_axis.labels = new_labels
+            
             page.update()
 
     page.add(
-        ft.Row([ft.Text("⚡ Deribit DEX Terminal", size=20, weight=ft.FontWeight.BOLD),
+        ft.Row([ft.Text("⚡ Deribit GEX Terminal", size=20, weight=ft.FontWeight.BOLD),
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         create_section_header("NET GAMMA PROFILES BY STRIKE"),
@@ -259,4 +263,13 @@ def main(page: ft.Page):
         create_section_header("ABS GEX (GROSS HEDGING ACTIVITY)"),
         ft.Card(content=ft.Container(padding=15, content=abs_gex_chart)),
         create_section_header("TOTAL GAMMA EXPOSURE"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Call Gamma
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Call Gamma", call_gex_txt), ui_row_item("Put Gamma", put_gex_txt), ui_row_item("Net Gamma", net_gex_txt), ui_row_item("Call Weight (%)", weight_txt)]))),
+        create_section_header("IMPORTANT LEVELS"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
+        create_section_header("INFLOW ANALYSIS"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("24h Call Inflows", inflows_call_txt), ui_row_item("24h Put Inflows", outflows_put_txt), ui_row_item("Net Volume Bias", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
+    )
+    refresh_dashboard()
+
+if __name__ == "__main__":
+    ft.app(target=main, port=int(os.environ.get("PORT", 8080)), host="0.0.0.0", view=ft.AppView.WEB_BROWSER)
