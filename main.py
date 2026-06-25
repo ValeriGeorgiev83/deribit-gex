@@ -3,46 +3,34 @@ import requests
 import pandas as pd
 import os
 import math
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
-# --- BINANCE DATA AGGREGATE CVD CALCULATOR ---
+# --- FIXED: BINANCE KLINE CVD ENGINE ---
 def fetch_binance_cvd_change(symbol="BTCUSDT", is_futures=False):
     """
-    Approximates the historical Aggregate CVD changes over the last 15m, 1h, and 4h
-    by analyzing taker buy vs taker sell aggregate volume distributions.
+    Extracts accurate periodic CVD by reading native taker volume metrics 
+    from open candlestick data blocks, avoiding trade pagination limits.
     """
-    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    
-    # Define Lookback windows in milliseconds
-    ms_15m = 15 * 60 * 1000
-    ms_1h = 60 * 60 * 1000
-    ms_4h = 4 * 60 * 60 * 1000
-    
     base_url = "https://fapi.binance.com" if is_futures else "https://api.binance.com"
-    endpoint = f"{base_url}/fapi/v1/aggTrades" if is_futures else f"{base_url}/api/v3/aggTrades"
+    endpoint = f"{base_url}/fapi/v1/klines" if is_futures else f"{base_url}/api/v3/klines"
     
-    intervals = {"15m": ms_15m, "1h": ms_1h, "4h": ms_4h}
+    intervals = {"15m": "15m", "1h": "1h", "4h": "4h"}
     results = {"15m": 0.0, "1h": 0.0, "4h": 0.0}
     
-    for key, delta_ms in intervals.items():
+    for key, timeframe in intervals.items():
         try:
-            # Query the aggregate trade list for the requested lookback slice
-            start_time = now_ms - delta_ms
-            params = {"symbol": symbol, "startTime": start_time, "limit": 1000}
+            # Request the single most recent candle block for the interval
+            params = {"symbol": symbol, "interval": timeframe, "limit": 1}
             res = requests.get(endpoint, params=params).json()
             
-            cvd_sum = 0.0
-            if isinstance(res, list):
-                for trade in res:
-                    qty = float(trade.get('q', 0))
-                    # m = True means buyer is market maker (taker sell -> negative)
-                    # m = False means seller is market maker (taker buy -> positive)
-                    is_buyer_mm = trade.get('m', True)
-                    if not is_buyer_mm:
-                        cvd_sum += qty
-                    else:
-                        cvd_sum -= qty
-            results[key] = cvd_sum
+            if isinstance(res, list) and len(res) > 0:
+                candle = res[0]
+                total_vol = float(candle[5])        # Total Base Asset Volume
+                taker_buy_vol = float(candle[9])    # Taker Buy Base Asset Volume
+                taker_sell_vol = total_vol - taker_buy_vol
+                
+                # CVD Calculation: Taker Buys minus Taker Sells
+                results[key] = taker_buy_vol - taker_sell_vol
         except Exception:
             results[key] = 0.0
             
@@ -196,7 +184,6 @@ def fetch_deribit_gex(currency="BTC"):
             "gex": gex_val
         })
 
-    # Pull Binance Spot & Futures CVD Metrics
     cvd_spot_data = fetch_binance_cvd_change("BTCUSDT", is_futures=False)
     cvd_futures_data = fetch_binance_cvd_change("BTCUSDT", is_futures=True)
 
@@ -234,8 +221,12 @@ def fmt_inflow(val):
         return f"{sign}{val/1000:.1f}k"
     return f"{sign}{val:.0f}"
 
+# Updated tracking formatting
 def fmt_cvd(val):
     sign = "+" if val >= 0 else ""
+    abs_val = abs(val)
+    if abs_val >= 1000:
+        return f"{sign}{val/1000:.1f}k"
     return f"{sign}{val:.2f}"
 
 def main(page: ft.Page):
@@ -261,7 +252,6 @@ def main(page: ft.Page):
     net_flow_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
 
-    # --- BINANCE DATA LABELS STRUCTURE ---
     cvd_s_15m = ft.Text("0.00", weight=ft.FontWeight.W_600, size=14)
     cvd_s_1h = ft.Text("0.00", weight=ft.FontWeight.W_600, size=14)
     cvd_s_4h = ft.Text("0.00", weight=ft.FontWeight.W_600, size=14)
@@ -321,7 +311,6 @@ def main(page: ft.Page):
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            # --- UPDATE CVD SPOT LABELS AND COLORS ---
             cvd_s_15m.value = fmt_cvd(m['cvd_spot']['15m'])
             cvd_s_15m.color = ft.colors.GREEN_400 if m['cvd_spot']['15m'] >= 0 else ft.colors.RED_400
             
@@ -331,7 +320,6 @@ def main(page: ft.Page):
             cvd_s_4h.value = fmt_cvd(m['cvd_spot']['4h'])
             cvd_s_4h.color = ft.colors.GREEN_400 if m['cvd_spot']['4h'] >= 0 else ft.colors.RED_400
 
-            # --- UPDATE CVD FUTURES LABELS AND COLORS ---
             cvd_f_15m.value = fmt_cvd(m['cvd_futures']['15m'])
             cvd_f_15m.color = ft.colors.GREEN_400 if m['cvd_futures']['15m'] >= 0 else ft.colors.RED_400
             
@@ -439,13 +427,11 @@ def main(page: ft.Page):
             )
         ),
         
-        # --- NEW SECTION: BINANCE DATA (AGGREGATE CVD MATRIX) ---
         create_section_header("BINANCE DATA"),
         ft.Card(
             content=ft.Container(
                 padding=14,
                 content=ft.Column([
-                    # Interval Header Row
                     ft.Row([
                         ft.Text("Interval", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_400),
                         ft.Row([
@@ -456,7 +442,6 @@ def main(page: ft.Page):
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     ft.Divider(color=ft.colors.GREY_800, height=10),
                     
-                    # CVD Spot Row
                     ft.Row([
                         ft.Text("CVD Spot", size=14, weight=ft.FontWeight.W_500, color=ft.colors.GREY_100),
                         ft.Row([
@@ -466,7 +451,6 @@ def main(page: ft.Page):
                         ], spacing=10)
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     
-                    # CVD Futures Row
                     ft.Row([
                         ft.Text("CVD Futures", size=14, weight=ft.FontWeight.W_500, color=ft.colors.GREY_100),
                         ft.Row([
