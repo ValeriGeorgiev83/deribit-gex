@@ -250,7 +250,6 @@ def fmt_gex(val):
     abs_val = abs(val)
     return f"{sign}{abs_val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{abs_val:.1f}"
 
-# FIXED: Outputs unsigned, pure numbers with clean millions labels ($M)
 def fmt_unsigned_fiat_flow(val):
     millions_val = abs(val) / 1000000.0
     return f"{millions_val:,.1f}M"
@@ -307,17 +306,16 @@ def main(page: ft.Page):
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
         min_x=0,
-        max_x=21,
+        max_x=24, # FIXED: Calibrated axis boundaries to process full day ticks
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=220
     )
 
-    # FIXED: Calibrated padding to 51px left and 11px right. This squeezes the 
-    # timeline container to perfectly align with the chart's internal graph vectors.
+    # FIXED: Layout padding coordinates optimized to track canvas end points
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(left=51, right=11)
+        padding=ft.padding.only(left=52, right=14)
     )
 
     def create_section_header(title):
@@ -341,7 +339,6 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}"
             
-            # Formatting inflow components to remove signs while preserving color rules
             inflows_call_txt.value = fmt_unsigned_fiat_flow(m['call_inflow'])
             inflows_call_txt.color = ft.colors.GREEN_400 if m['call_inflow'] >= 0 else ft.colors.RED_400
             
@@ -353,7 +350,7 @@ def main(page: ft.Page):
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            # --- REDIS LOGGING ENGINE (WITH TIME DUP GUARD) ---
+            # --- REDIS LOGGING ENGINE ---
             time_now = datetime.now(timezone.utc)
             current_refresh_ts = time_now.strftime("%m-%d %H:%M")
             try:
@@ -373,11 +370,11 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- GENERATE STEP LABELS ACROSS 21 HOURS ---
+            # --- GENERATE STEP LABELS ACROSS 24 HOURS ---
             current_utc_hour = time_now.hour
             row_elements = []
-            for step in range(0, 22, 3):
-                calculated_hour = (current_utc_hour - 21 + step) % 24
+            for step in range(0, 25, 3): # Loops step from 0 up to 24 matching canvas dimensions
+                calculated_hour = (current_utc_hour - 24 + step) % 24
                 row_elements.append(
                     ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
                 )
@@ -402,7 +399,7 @@ def main(page: ft.Page):
                                 rec_time = rec_time.replace(year=time_now.year - 1)
                                 
                             hours_diff = (time_now - rec_time).total_seconds() / 3600.0
-                            if hours_diff <= 21.0:
+                            if hours_diff <= 24.0: # Filter boundary increased to capture full day metrics
                                 data['epoch'] = rec_time.timestamp()
                                 data['hours_ago'] = hours_diff
                                 filtered_records.append(data)
@@ -437,8 +434,8 @@ def main(page: ft.Page):
 
                     line_points = []
                     for data in filtered_records:
-                        x_pos = 21.0 - data['hours_ago']
-                        if 0 <= x_pos <= 21:
+                        x_pos = 24.0 - data['hours_ago']
+                        if 0 <= x_pos <= 24:
                             line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
                     
                     history_line_chart.data_series[0].data_points = line_points
@@ -473,7 +470,6 @@ def main(page: ft.Page):
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
-        # CHANGED: Renamed section header to denote 24 HRS in bracket index
         create_section_header("NET GAMMA EXPOSURE (24 HRS)"),
         ft.Card(
             content=ft.Container(
@@ -500,7 +496,7 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
-        # CHANGED: Renamed key layout markers to matching precise institutional formatting terms
+        # CHANGED: Labels modified and sign notations stripped out cleanly per request
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
     )
     refresh_dashboard()
