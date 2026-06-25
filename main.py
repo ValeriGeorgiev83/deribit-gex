@@ -159,7 +159,7 @@ def fetch_deribit_gex(currency="BTC"):
         print(f"Option Trade Fetch Interrupted: {ex}")
 
     time_now = datetime.now(timezone.utc)
-    current_epoch = time_now.timestamp()
+    current_refresh_epoch = time_now.timestamp()
 
     # --- TIME-BASED HISTORICAL LOG CLEAN-UP ENGINE ---
     try:
@@ -167,13 +167,12 @@ def fetch_deribit_gex(currency="BTC"):
         is_duplicate = False
         if last_logged_element:
             last_logged_data = json.loads(last_logged_element)
-            # Use safe subtraction window to guard duplicate writes inside the same minute loop
-            if abs(current_epoch - last_logged_data.get("epoch", 0)) < 60.0:
+            if abs(current_refresh_epoch - last_logged_data.get("epoch", 0)) < 60.0:
                 is_duplicate = True
 
         if not is_duplicate:
             flow_snapshot = {
-                "epoch": current_epoch,
+                "epoch": current_refresh_epoch,
                 "call_flow": round(net_call_fiat_flow, 2),
                 "put_flow": round(net_put_fiat_flow, 2)
             }
@@ -185,10 +184,9 @@ def fetch_deribit_gex(currency="BTC"):
 
         for record in all_flow_records:
             f_data = json.loads(record)
-            # Fallback handling: check for pure float coordinates natively
             rec_epoch = f_data.get("epoch", 0)
             
-            if (current_epoch - rec_epoch) <= 86400.0:
+            if (current_refresh_epoch - rec_epoch) <= 86400.0:
                 valid_flow_records.append(f_data)
             else:
                 records_to_remove_count += 1
@@ -250,7 +248,7 @@ def fmt_gex(val):
     abs_val = abs(val)
     return f"{sign}{abs_val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{abs_val:.1f}"
 
-# FIXED: Outputs unsigned, pure numbers scaled to Million layouts ($M)
+# FIXED: Removed sign prefixes, strictly returning pure absolute layout numbers with Millions tags
 def fmt_unsigned_fiat_flow(val):
     millions_val = abs(val) / 1000000.0
     return f"{millions_val:,.1f}M"
@@ -307,16 +305,16 @@ def main(page: ft.Page):
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
         min_x=0,
-        max_x=21, # Ground target size scale mapped cleanly across 8 vertical intervals
+        max_x=21, # Ground target dimension grid matrix 
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=220
     )
 
-    # FIXED: Calibrated padding to left=51 and right=14 to lock alignment with the canvas edges
+    # FIXED: Calibrated container limits to line up with the edge of the graph line canvas
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(left=51, right=14)
+        padding=ft.padding.only(left=52, right=14)
     )
 
     def create_section_header(title):
@@ -351,14 +349,13 @@ def main(page: ft.Page):
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            # --- REDIS LOGGING ENGINE (WITH Bulletproof Float Snapshotting) ---
+            # --- REDIS LOGGING ENGINE ---
             time_now = datetime.now(timezone.utc)
             current_refresh_epoch = time_now.timestamp()
             try:
                 last_gex_element = redis.lindex(REDIS_KEY, -1)
                 is_gex_dup = False
                 if last_gex_element:
-                    # Guard writes within the same minute threshold
                     if abs(current_refresh_epoch - json.loads(last_gex_element).get("epoch", 0)) < 60.0:
                         is_gex_dup = True
 
@@ -372,7 +369,7 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- GENERATE STEP LABELS ACROSS 21 HRS (8 MARKERS) ---
+            # --- GENERATE STEP LABELS ACROSS 21 HOURS ---
             current_utc_hour = time_now.hour
             row_elements = []
             for step in range(0, 22, 3): 
@@ -391,10 +388,8 @@ def main(page: ft.Page):
                     for record in raw_records:
                         try:
                             data = json.loads(record)
-                            # FIXED: Direct robust float tracking completely resolves date string parsing crashes
                             rec_epoch = data.get("epoch")
                             
-                            # Fallback strategy for older structural data strings inside database
                             if not rec_epoch:
                                 ts_str = data['timestamp']
                                 if "-" in ts_str:
@@ -440,9 +435,10 @@ def main(page: ft.Page):
 
                     line_points = []
                     for data in filtered_records:
+                        # FIXED: Clamped bounds matrix tracking calculation logic directly to grid vectors
                         x_pos = 21.0 - data['hours_ago']
-                        if 0 <= x_pos <= 21:
-                            line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
+                        x_pos = max(0.0, min(21.0, x_pos))
+                        line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
                     
                     history_line_chart.data_series[0].data_points = line_points
             except Exception as ex:
@@ -476,6 +472,7 @@ def main(page: ft.Page):
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
+        # FIXED: Section header bracket modified to read (24 HRS) cleanly
         create_section_header("NET GAMMA EXPOSURE (24 HRS)"),
         ft.Card(
             content=ft.Container(
@@ -502,7 +499,7 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
-        # FIXED: Specific label styling applied matching requested configurations exactly
+        # FIXED: Field row names altered to match target specification tokens
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
     )
     refresh_dashboard()
