@@ -186,22 +186,34 @@ def main(page: ft.Page):
     net_flow_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
 
+    # State tracking variables for explicit precise rendering
+    v_lines_map = {}
+    spot_index_target = -1
+
+    def vertical_grid_eval(val):
+        idx = int(val)
+        # Highlight spot price index line as yellow, or normal $1k intervals as grey
+        if idx == spot_index_target:
+            return True
+        return v_lines_map.get(idx, False)
+
     gex_bar_chart = ft.BarChart(
         bar_groups=[],
         bottom_axis=ft.ChartAxis(labels=[], labels_size=22),
         horizontal_grid_lines=ft.ChartGridLines(
-            color=ft.colors.SURFACE_VARIANT,
+            color=ft.colors.PURPLE_A100,
             width=1.0,
             interval=50000
         ),
         vertical_grid_lines=ft.ChartGridLines(
             color=ft.colors.GREY_800,
             width=0.6,
-            interval=2
+            interval=1,
+            check_handler=vertical_grid_eval
         ),
         animate=True,
         interactive=True,
-        height=220
+        height=240
     )
 
     def create_section_header(title_name):
@@ -220,6 +232,7 @@ def main(page: ft.Page):
         )
 
     def refresh_dashboard(e=None):
+        nonlocal spot_index_target, v_lines_map
         m = fetch_deribit_gex("BTC")
         if m:
             spot_txt.value = f"${m['spot']:,.2f}"
@@ -243,11 +256,33 @@ def main(page: ft.Page):
             
             new_groups = []
             new_labels = []
+            v_lines_map.clear()
+            
+            # Dynamically determine closest bar index to underlying spot price
+            min_dist = float('inf')
+            spot_index_target = -1
+            
+            for item in m['chart_data']:
+                dist = abs(item['strike'] - m['spot'])
+                if dist < min_dist:
+                    min_dist = dist
+                    spot_index_target = item['index']
+
+            # Rescale the internal grid line boundaries to align with your option metrics
+            max_val = max([abs(item['gex']) for item in m['chart_data']]) if m['chart_data'] else 1.0
+            if max_val == 0: max_val = 1.0
+            
+            # Map standard visual target bars inside your chart grid configuration
+            gex_bar_chart.horizontal_grid_lines.interval = max_val * 0.65
             
             for item in m['chart_data']:
                 val = item['gex']
                 bar_color = ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400
                 strike_val = item['strike']
+                
+                # Assign vertical grid logic 
+                if strike_val % 1000 == 0:
+                    v_lines_map[item['index']] = True
                 
                 new_groups.append(
                     ft.BarChartGroup(
@@ -272,8 +307,15 @@ def main(page: ft.Page):
                         )
                     )
             
+            # Apply dynamic changes to the grid rendering engine
             gex_bar_chart.bar_groups = new_groups
             gex_bar_chart.bottom_axis.labels = new_labels
+            
+            # Explicitly override the vertical line style for the spot price index
+            if spot_index_target != -1:
+                gex_bar_chart.vertical_grid_lines.color = ft.colors.YELLOW_accent_700
+                gex_bar_chart.vertical_grid_lines.width = 1.4
+            
             page.update()
 
     page.add(
