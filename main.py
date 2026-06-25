@@ -130,4 +130,53 @@ def main(page: ft.Page):
     sup_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color="pink400")
     
     inflows_call_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color="green400")
-    inflows_put_txt = ft.Text("0.0k", size=18, weight=ft.
+    # FIX: Closed parenthetical block properly below
+    inflows_put_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color="red400")
+    cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color="cyan300")
+
+    def create_section_header(title_name):
+        return ft.Container(
+            content=ft.Text(title_name, size=13, weight=ft.FontWeight.BOLD, color="grey500"),
+            margin=ft.margin.only(top=15, bottom=5)
+        )
+
+    def ui_row_item(label, component):
+        return ft.Container(
+            content=ft.Row([
+                ft.Text(label, size=14, color="grey300"),
+                component
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            padding=ft.padding.symmetric(vertical=4)
+        )
+
+    def refresh_dashboard(e=None):
+        m = fetch_deribit_gex("BTC")
+        if m:
+            spot_txt.value = f"${m['spot']:,.2f}"
+            
+            call_gex_txt.value = fmt_gex(m['call_gex'])
+            put_gex_txt.value = fmt_gex(m['put_gex'])
+            net_gex_txt.value = fmt_gex(m['net_gex'])
+            net_gex_txt.color = "green400" if m['net_gex'] >= 0 else "red400"
+            weight_txt.value = f"{m['call_weight']:.1f}%"
+            
+            pain_txt.value = f"${m['max_pain']:,.0f}"
+            flip_txt.value = f"${m['flip']:,.0f}"
+            breakout_txt.value = f"${m['breakout']:,.0f}"
+            res_txt.value = f"${m['resistance']:,.0f}"
+            sup_txt.value = f"${m['support']:,.0f}"
+            
+            inflows_call_txt.value = f"+{m['call_vol']/1000:.1f}k" if m['call_vol'] >= 1000 else f"+{m['call_vol']:.0f}"
+            inflows_put_txt.value = f"+{m['put_vol']/1000:.1f}k" if m['put_vol'] >= 1000 else f"+{m['put_vol']:.0f}"
+            cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
+            
+            page.update()
+
+    page.add(
+        ft.Row([
+            ft.Text("⚡ Deribit Analytics", size=20, weight=ft.FontWeight.BOLD),
+            ft.IconButton(icon=ft.icons.REFRESH, on_click=refresh_dashboard, icon_color="greenaccent")
+        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        
+        ft.Card(
+            content=ft.
