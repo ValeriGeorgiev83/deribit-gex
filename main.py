@@ -4,16 +4,17 @@ import json
 import requests
 import pandas as pd
 import flet as ft
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # Initialize Upstash Redis
 from upstash_redis import Redis
 redis = Redis(
     url="https://large-ghost-131173.upstash.io", 
-    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0TzlhOWJmZGM1MTg5OWViZDIxMw"
+    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
 )
 REDIS_KEY = "deribit_gex_3d_history"
-MAX_HISTORY_POINTS = 2500
+REDIS_FLOW_KEY = "deribit_flow_24h_history"
+MAX_HISTORY_POINTS = 3500 # Kept fully at your 7-day target bounds
 
 def fetch_deribit_gex(currency="BTC"):
     """Fetches and calculates GEX and market flow data from Deribit."""
@@ -132,9 +133,10 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # --- METHOD B: OPTION TAPE DIRECTIONAL ENGINE ---
-    net_call_flow = 0.0
-    net_put_flow = 0.0
+    # --- CLOUD-STORAGE ACCUMULATED TAPE ORDER FLOW ENGINE ---
+    current_refresh_call_flow = 0.0
+    current_refresh_put_flow = 0.0
+    
     try:
         trades_url = f"https://www.deribit.com/api/v2/public/get_last_trades_by_currency?currency={currency}&kind=option&count=1000"
         trades_res = requests.get(trades_url).json()
@@ -142,22 +144,76 @@ def fetch_deribit_gex(currency="BTC"):
         
         for trade in trades_list:
             ins_name = trade.get('instrument_name', '')
-            direction = trade.get('direction', 'buy') # buy (taker hits ask) / sell (taker hits bid)
+            direction = trade.get('direction', 'buy')
             amount = float(trade.get('amount', 0))
             
             if ins_name.endswith('-C'):
-                # Call Logic: Buying = Bullish (+), Selling = Bearish (-)
-                if direction == 'buy': net_call_flow += amount
-                else: net_call_flow -= amount
+                if direction == 'buy': current_refresh_call_flow += amount
+                else: current_refresh_call_flow -= amount
             elif ins_name.endswith('-P'):
-                # Put Logic: Buying = Bearish (-), Selling = Bullish (+)
-                if direction == 'buy': net_put_flow -= amount
-                else: net_put_flow += amount
+                if direction == 'buy': current_refresh_put_flow -= amount
+                else: current_refresh_put_flow += amount
     except Exception as ex:
-        print(f"Tape Stream Interrupted: {ex}")
+        print(f"Option Trade Fetch Interrupted: {ex}")
 
-    # Net combinations of the directional biases
-    net_flow_bias = net_call_flow + net_put_flow
+    time_now = datetime.now(timezone.utc)
+    current_ts = time_now.strftime("%m-%d %H:%M")
+
+    # --- EXTRA ACTION: TIME-BASED HISTORICAL LOG CLEAN-UP ENGINE ---
+    try:
+        # Check if the minute has already been logged to prevent layout duplication
+        last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
+        is_duplicate = False
+        if last_logged_element:
+            last_logged_data = json.loads(last_logged_element)
+            if last_logged_data.get("timestamp") == current_ts:
+                is_duplicate = True
+
+        if not is_duplicate:
+            flow_snapshot = {
+                "timestamp": current_ts,
+                "call_flow": round(current_refresh_call_flow, 2),
+                "put_flow": round(current_refresh_put_flow, 2)
+            }
+            redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
+
+        # Evict records older than 24 hours to protect free-tier limits
+        all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
+        valid_flow_records = []
+        records_to_remove_count = 0
+
+        for record in all_flow_records:
+            f_data = json.loads(record)
+            ts_str = f_data['timestamp']
+            rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+            if rec_time > time_now: rec_time = rec_time.replace(year=time_now.year - 1)
+            
+            if (time_now - rec_time).total_seconds() <= 86400.0:
+                valid_flow_records.append(f_data)
+            else:
+                records_to_remove_count += 1
+
+        # Pop expired nodes from the left edge of your Redis array list
+        if records_to_remove_count > 0:
+            redis.ltrim(REDIS_FLOW_KEY, records_to_remove_count, -1)
+
+    except Exception as ex:
+        print(f"Cloud Flow Lifecycle Eviction Guard Triggered: {ex}")
+        valid_flow_records = []
+
+    # Calculate final rolling 24h volumes from our validated memory lists
+    total_accumulated_call_flow = 0.0
+    total_accumulated_put_flow = 0.0
+
+    if valid_flow_records:
+        for f_data in valid_flow_records:
+            total_accumulated_call_flow += f_data["call_flow"]
+            total_accumulated_put_flow += f_data["put_flow"]
+    else:
+        total_accumulated_call_flow = current_refresh_call_flow
+        total_accumulated_put_flow = current_refresh_put_flow
+
+    net_flow_bias = total_accumulated_call_flow + total_accumulated_put_flow
     call_oi_3m = call_df_3m['oi'].sum()
     put_oi_3m = put_df_3m['oi'].sum()
     cp_ratio = put_oi_3m / call_oi_3m if call_oi_3m > 0 else 0
@@ -187,7 +243,7 @@ def fetch_deribit_gex(currency="BTC"):
         "net_gex_3m": net_gex_3m,
         "call_weight": call_weight_pct, "max_pain": max_pain_level, "flip": flip_level,
         "breakout": breakout_price, "resistance": resistance_level, "support": support_level,
-        "call_inflow": net_call_flow, "put_inflow": net_put_flow,
+        "call_inflow": total_accumulated_call_flow, "put_inflow": total_accumulated_put_flow,
         "net_flow": net_flow_bias, "cp_ratio": cp_ratio, "chart_data": chart_matrix
     }
 
@@ -284,29 +340,34 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}"
             
-            # Call Flow Format & Color Mapping
             inflows_call_txt.value = fmt_order_flow(m['call_inflow'])
             inflows_call_txt.color = ft.colors.GREEN_400 if m['call_inflow'] >= 0 else ft.colors.RED_400
             
-            # Put Flow Format & Color Mapping (Now accurately tracking buying as Red/Minus, selling as Green/Plus)
             outflows_put_txt.value = fmt_order_flow(m['put_inflow'])
             outflows_put_txt.color = ft.colors.GREEN_400 if m['put_inflow'] >= 0 else ft.colors.RED_400
             
-            # Net Combined Premium Bias Mapping
             net_flow_txt.value = fmt_order_flow(m['net_flow'])
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            # --- REDIS LOGGING ENGINE ---
+            # --- REDIS LOGGING ENGINE (WITH TIME DUP GUARD) ---
             time_now = datetime.now(timezone.utc)
+            current_refresh_ts = time_now.strftime("%m-%d %H:%M")
             try:
-                snapshot = {
-                    "timestamp": time_now.strftime("%m-%d %H:%M"),
-                    "gex": round(m['net_gex_3m'], 2)
-                }
-                redis.rpush(REDIS_KEY, json.dumps(snapshot))
-                redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
+                last_gex_element = redis.lindex(REDIS_KEY, -1)
+                is_gex_dup = False
+                if last_gex_element:
+                    if json.loads(last_gex_element).get("timestamp") == current_refresh_ts:
+                        is_gex_dup = True
+
+                if not is_gex_dup:
+                    snapshot = {
+                        "timestamp": current_refresh_ts,
+                        "gex": round(m['net_gex_3m'], 2)
+                    }
+                    redis.rpush(REDIS_KEY, json.dumps(snapshot))
+                    redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
@@ -329,7 +390,12 @@ def main(page: ft.Page):
                     for record in raw_records:
                         try:
                             data = json.loads(record)
-                            rec_time = datetime.strptime(f"{time_now.year}-{data['timestamp']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                            ts_str = data['timestamp']
+                            if "-" in ts_str:
+                                rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                            else:
+                                rec_time = datetime.strptime(f"{time_now.year}-{time_now.month}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                                
                             if rec_time > time_now:
                                 rec_time = rec_time.replace(year=time_now.year - 1)
                                 
@@ -405,7 +471,7 @@ def main(page: ft.Page):
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
-        create_section_header("NET GAMMA EXPOSURE (24 HRS)"),
+        ft.Text("NET GAMMA EXPOSURE (21 HRS)", size=13, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_500),
         ft.Card(
             content=ft.Container(
                 padding=ft.padding.only(left=5, right=20, top=15, bottom=15), 
@@ -424,8 +490,8 @@ def main(page: ft.Page):
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Call Gamma", call_gex_txt), ui_row_item("Put Gamma", put_gex_txt), ui_row_item("Net Gamma", net_gex_txt), ui_row_item("Call Weight (%)", weight_txt)]))),
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
-        create_section_header("INFLOW ANALYSIS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Net Call Order Flow", inflows_call_txt), ui_row_item("Net Put Order Flow", outflows_put_txt), ui_row_item("Net Premium Bias", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
+        create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Net Call Order Flow (BTC Options)", inflows_call_txt), ui_row_item("Net Put Order Flow (BTC Options)", outflows_put_txt), ui_row_item("Net Premium Bias", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
     )
     refresh_dashboard()
 
