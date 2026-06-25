@@ -192,7 +192,8 @@ def main(page: ft.Page):
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
-    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=5)
+    # Increased label size to safely house native timeline digits on the canvas base
+    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=20)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
@@ -233,16 +234,10 @@ def main(page: ft.Page):
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
         min_x=0,
-        max_x=21,  # Set maximum range to 21 hours
+        max_x=21,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=240
-    )
-
-    # Clean bottom container tailored to match a 21-hour graph grid structure perfectly
-    native_timeline_container = ft.Container(
-        content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(left=44, right=14, top=2)
     )
 
     def create_section_header(title):
@@ -285,15 +280,18 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- GENERATE STEP LABELS ACROSS 21 HOURS ---
+            # --- NATIVE AXIS TIMELINE ENGINE ---
             current_utc_hour = time_now.hour
-            row_elements = []
-            for step in range(0, 22, 3):  # 8 cleanly spaced markers from -21h up to 0h
+            x_labels = []
+            for step in range(0, 22, 3):
                 calculated_hour = (current_utc_hour - 21 + step) % 24
-                row_elements.append(
-                    ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
+                x_labels.append(
+                    ft.ChartAxisLabel(
+                        value=step,
+                        label=ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
+                    )
                 )
-            native_timeline_container.content.controls = row_elements
+            history_bottom_axis.labels = x_labels
 
             # --- POPULATE ROLLING HISTORICAL TREND ---
             try:
@@ -309,7 +307,7 @@ def main(page: ft.Page):
                                 rec_time = rec_time.replace(year=time_now.year - 1)
                                 
                             hours_diff = (time_now - rec_time).total_seconds() / 3600.0
-                            if hours_diff <= 21.0:  # Bound processing filter logic inside 21 hours
+                            if hours_diff <= 21.0:
                                 data['epoch'] = rec_time.timestamp()
                                 data['hours_ago'] = hours_diff
                                 filtered_records.append(data)
@@ -384,10 +382,7 @@ def main(page: ft.Page):
         ft.Card(
             content=ft.Container(
                 padding=ft.padding.only(left=5, right=20, top=15, bottom=15), 
-                content=ft.Column([
-                    history_line_chart,
-                    native_timeline_container
-                ], spacing=0)
+                content=history_line_chart
             )
         ),
         
