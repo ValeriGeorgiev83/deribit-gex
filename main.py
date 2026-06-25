@@ -23,7 +23,7 @@ def fetch_deribit_gex(currency="BTC"):
         spot_price = float(idx_res['result']['index_price'])
         
         opt_url = f"https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency={currency}&kind=option"
-        opt_res = requests.get(opt_res).json() if 'opt_res' in locals() else requests.get(opt_url).json()
+        opt_res = requests.get(opt_url).json()
         data_list = opt_res['result']
     except Exception:
         return None
@@ -192,8 +192,6 @@ def main(page: ft.Page):
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
-    
-    # FIXED: Return to clean explicit array labels architecture
     history_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
@@ -281,7 +279,7 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- FIXED: EXPLICIT TIMELINE ARRAYS IN 2-DIGIT 24H HOUR FORMAT ---
+            # --- FIXED: FORCE EXPLICIT TIMELINE ARRAYS ON MOBILE VIEWS ---
             current_utc_hour = time_now.hour
             y_timeline_labels = []
             
@@ -290,7 +288,16 @@ def main(page: ft.Page):
                 y_timeline_labels.append(
                     ft.ChartAxisLabel(
                         value=float(step),
-                        label=ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
+                        label=ft.Container(
+                            content=ft.Text(
+                                f"{calculated_hour:02d}", 
+                                size=10, 
+                                color=ft.colors.GREY_400, 
+                                weight=ft.FontWeight.W_500
+                            ),
+                            alignment=ft.alignment.center,
+                            width=16  # Small safe footprint stops collision engine drops
+                        )
                     )
                 )
             history_bottom_axis.labels = y_timeline_labels
