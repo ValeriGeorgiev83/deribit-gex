@@ -228,15 +228,16 @@ def main(page: ft.Page):
                 color=ft.colors.ORANGE_400,
                 stroke_width=2.5,
                 curved=True,
-                # FIXED: Removed below_line_bgcolor property completely to drop the shaded area
+                # FIXED: Removed below_line_bgcolor completely to remove area shading
             )
         ],
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
         min_x=0,
         max_x=23,
-        bottom_axis_interval=3, 
+        # FIXED: Removed 'bottom_axis_interval' completely from here
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        # FIXED: Relocated interval directly inside ChartGridLines structure
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=260
     )
