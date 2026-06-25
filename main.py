@@ -151,7 +151,7 @@ def fetch_deribit_gex(currency="BTC"):
             
             if ins_name.endswith('-C'):
                 if direction == 'buy': net_call_fiat_flow += fiat_notional_value
-                else: net_call_fiat_flow -= fiat_notional_value
+                else: net_call_fiat_flow -= net_fiat_notional_value
             elif ins_name.endswith('-P'):
                 if direction == 'buy': net_put_fiat_flow -= fiat_notional_value
                 else: net_put_fiat_flow += fiat_notional_value
@@ -248,7 +248,6 @@ def fmt_gex(val):
     abs_val = abs(val)
     return f"{sign}{abs_val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{abs_val:.1f}"
 
-# FIXED: Removed sign prefixes, strictly returning pure absolute layout numbers with Millions tags
 def fmt_unsigned_fiat_flow(val):
     millions_val = abs(val) / 1000000.0
     return f"{millions_val:,.1f}M"
@@ -305,16 +304,16 @@ def main(page: ft.Page):
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
         min_x=0,
-        max_x=21, # Ground target dimension grid matrix 
+        max_x=21, 
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=220
     )
 
-    # FIXED: Calibrated container limits to line up with the edge of the graph line canvas
+    # REVISED: Calibrated layout container width to line up exactly with grid lines
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(left=52, right=14)
+        padding=ft.padding.only(left=51, right=11)
     )
 
     def create_section_header(title):
@@ -399,6 +398,7 @@ def main(page: ft.Page):
                                 if rec_time > time_now: rec_time = rec_time.replace(year=time_now.year - 1)
                                 rec_epoch = rec_time.timestamp()
 
+                            # FIXED rollover math: compute time difference dynamically using absolute float epochs
                             hours_diff = (current_refresh_epoch - rec_epoch) / 3600.0
                             if hours_diff <= 21.0: 
                                 data['epoch_computed'] = rec_epoch
@@ -435,7 +435,7 @@ def main(page: ft.Page):
 
                     line_points = []
                     for data in filtered_records:
-                        # FIXED: Clamped bounds matrix tracking calculation logic directly to grid vectors
+                        # Map points cleanly into the line canvas frame
                         x_pos = 21.0 - data['hours_ago']
                         x_pos = max(0.0, min(21.0, x_pos))
                         line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
@@ -472,7 +472,6 @@ def main(page: ft.Page):
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
-        # FIXED: Section header bracket modified to read (24 HRS) cleanly
         create_section_header("NET GAMMA EXPOSURE (24 HRS)"),
         ft.Card(
             content=ft.Container(
@@ -499,7 +498,7 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
-        # FIXED: Field row names altered to match target specification tokens
+        # FIXED: Labels updated to matching explicit casing configurations
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
     )
     refresh_dashboard()
