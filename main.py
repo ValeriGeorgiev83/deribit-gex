@@ -97,7 +97,7 @@ def fetch_deribit_gex(currency="BTC"):
             min_pain = pain
             max_pain_level = s
 
-    # STRUCTURAL MACRO FLIP CALCULATOR: Anchored strictly to the chart's $1,000 bins
+    # STRUCTURAL MACRO FLIP CALCULATOR
     df_3d_copy = df_3d.copy()
     df_3d_copy['macro_bucket'] = df_3d_copy['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     macro_grouped = df_3d_copy.groupby('macro_bucket')['gex'].sum().sort_index()
@@ -109,9 +109,7 @@ def fetch_deribit_gex(currency="BTC"):
             b1, b2 = buckets_list[i], buckets_list[i+1]
             g1, g2 = macro_grouped.loc[b1], macro_grouped.loc[b2]
             
-            # Check for structural crossing across zero between macro zones
             if (g1 < 0 and g2 > 0) or (g1 > 0 and g2 < 0):
-                # Interpolate accurately between the macro buckets
                 flip_level = b1 - g1 * (b2 - b1) / (g2 - g1)
                 flip_level = round(flip_level)
                 break
@@ -123,9 +121,14 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
+    # Volume and Inflow tracking logic modifications
     call_vol_3m = call_df_3m['volume'].sum()
     put_vol_3m = put_df_3m['volume'].sum()
-    net_flow = call_vol_3m - put_vol_3m
+    
+    # Calculate directional flows based on net premium positioning
+    signed_call_inflow = call_vol_3m if call_gex >= 0 else -call_vol_3m
+    signed_put_inflow = put_vol_3m if put_gex >= 0 else -put_vol_3m
+    net_flow = signed_call_inflow - signed_put_inflow
     
     call_oi_3m = call_df_3m['oi'].sum()
     put_oi_3m = put_df_3m['oi'].sum()
@@ -164,8 +167,8 @@ def fetch_deribit_gex(currency="BTC"):
         "breakout": breakout_price,
         "resistance": resistance_level,
         "support": support_level,
-        "call_vol": call_vol_3m,
-        "put_vol": put_vol_3m,
+        "call_inflow": signed_call_inflow,
+        "put_inflow": signed_put_inflow,
         "net_flow": net_flow,
         "cp_ratio": cp_ratio,
         "chart_data": chart_matrix
@@ -177,6 +180,13 @@ def fmt_gex(val):
     if abs_val >= 1000:
         return f"{sign}{abs_val/1000:.1f}k"
     return f"{sign}{abs_val:.1f}"
+
+def fmt_inflow(val):
+    sign = "+" if val >= 0 else ""
+    abs_val = abs(val)
+    if abs_val >= 1000:
+        return f"{sign}{val/1000:.1f}k"
+    return f"{sign}{val:.0f}"
 
 def main(page: ft.Page):
     page.title = "GEX Advanced Terminal"
@@ -196,8 +206,8 @@ def main(page: ft.Page):
     res_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_300)
     sup_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PINK_400)
     
-    inflows_call_txt = ft.Text("+0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
-    outflows_put_txt = ft.Text("-0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.RED_400)
+    inflows_call_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
+    outflows_put_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     net_flow_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
 
@@ -242,8 +252,15 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}"
             
-            inflows_call_txt.value = f"+{m['call_vol']/1000:.1f}k" if m['call_vol'] >= 1000 else f"+{m['call_vol']:.0f}"
-            outflows_put_txt.value = f"-{m['put_vol']/1000:.1f}k" if m['put_vol'] >= 1000 else f"-{m['put_vol']:.0f}"
+            # Dynamic color assignment for Call flow inputs
+            inflows_call_txt.value = fmt_inflow(m['call_inflow'])
+            inflows_call_txt.color = ft.colors.GREEN_400 if m['call_inflow'] >= 0 else ft.colors.RED_400
+            
+            # Dynamic color assignment for Put flow inputs
+            outflows_put_txt.value = fmt_inflow(m['put_inflow'])
+            outflows_put_txt.color = ft.colors.GREEN_400 if m['put_inflow'] >= 0 else ft.colors.RED_400
+
+            # Net Volume Profile Bias config
             net_flow_txt.value = fmt_gex(m['net_flow'])
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
@@ -351,8 +368,8 @@ def main(page: ft.Page):
             content=ft.Container(
                 padding=14,
                 content=ft.Column([
-                    ui_row_item("24h Call Inflows (+)", inflows_call_txt),
-                    ui_row_item("24h Put Inflows (-)", outflows_put_txt),
+                    ui_row_item("24h Call Inflows", inflows_call_txt),
+                    ui_row_item("24h Put Inflows", outflows_put_txt),
                     ui_row_item("Net Volume Bias", net_flow_txt),
                     ui_row_item("C/P Ratio", cp_ratio_txt),
                 ])
