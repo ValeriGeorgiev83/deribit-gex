@@ -1,86 +1,201 @@
-            # --- POPULATE ROLLING 24-HOUR HISTORICAL TREND ---
-            try:
-                raw_records = redis.lrange(REDIS_KEY, 0, -1)
-                if raw_records:
-                    filtered_records = []
-                    time_now = datetime.now(timezone.utc)
-                    
-                    for record in raw_records:
-                        try:
-                            data = json.loads(record)
-                            # Handle date wrapping properly
-                            rec_time = datetime.strptime(f"{time_now.year}-{data['timestamp']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                            if rec_time > time_now:
-                                rec_time = rec_time.replace(year=time_now.year - 1)
-                                
-                            hours_diff = (time_now - rec_time).total_seconds() / 3600.0
-                            if hours_diff <= 24.0:
-                                # Keep track of actual timestamps for true sorting
-                                data['epoch'] = rec_time.timestamp()
-                                filtered_records.append(data)
-                        except Exception:
-                            continue
+import os
+import math
+import json
+import requests
+import pandas as pd
+import flet as ft
+from datetime import datetime, timezone
 
-                    # Fallback to last 24 items if filter leaves it too empty
-                    if len(filtered_records) < 2:
-                        for idx, record in enumerate(raw_records[-24:]):
-                            d = json.loads(record)
-                            d['epoch'] = idx
-                            filtered_records.append(d)
+# Initialize Upstash Redis
+from upstash_redis import Redis
+redis = Redis(
+    url="https://large-ghost-131173.upstash.io", 
+    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
+)
+REDIS_KEY = "deribit_gex_3d_history"
+MAX_HISTORY_POINTS = 2500
 
-                    # CRITICAL FIX: Ensure array flows strictly from OLDEST to NEWEST
-                    filtered_records.sort(key=lambda x: x['epoch'])
+def fetch_deribit_gex(currency="BTC"):
+    """Fetches and calculates GEX and market flow data from Deribit."""
+    try:
+        idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
+        idx_res = requests.get(idx_url).json()
+        spot_price = float(idx_res['result']['index_price'])
+        
+        opt_url = f"https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency={currency}&kind=option"
+        opt_res = requests.get(opt_url).json()
+        data_list = opt_res['result']
+    except Exception:
+        return None
 
-                    gex_in_millions = [data['gex'] / 1000000.0 for data in filtered_records]
-                    max_m = max(gex_in_millions) if gex_in_millions else 50.0
-                    min_m = min(gex_in_millions) if gex_in_millions else -50.0
-                    
-                    largest_abs = max(abs(max_m), abs(min_m), 50.0)
-                    fixed_bound = math.ceil(largest_abs / 50.0) * 50.0
-                    
-                    history_line_chart.min_y = -fixed_bound * 1000000.0
-                    history_line_chart.max_y = fixed_bound * 1000000.0
+    now = datetime.now(timezone.utc)
+    parsed_options = []
+    
+    for item in data_list:
+        name = item['instrument_name']
+        parts = name.split('-')
+        if len(parts) < 4: continue
+            
+        expiry_str = parts[1]
+        strike = float(parts[2])
+        option_type = parts[3]
+        oi = float(item.get('open_interest', 0))
+        volume = float(item.get('volume', 0))
+        
+        try:
+            expiry_dt = datetime.strptime(expiry_str, "%d%b%y").replace(tzinfo=timezone.utc)
+            expiry_dt = expiry_dt.replace(hour=8, minute=0, second=0)
+            days_to_expiry = (expiry_dt - now).total_seconds() / 86400.0
+            if days_to_expiry < 0: continue
+        except Exception:
+            continue
+            
+        iv = float(item.get('mark_iv', 50)) / 100.0
+        if iv == 0: iv = 0.5
+            
+        try:
+            t_days = max(days_to_expiry, 0.01) / 365.0
+            distance = abs(math.log(spot_price / strike))
+            approx_gamma = (1.0 / (iv * math.sqrt(t_days) * math.sqrt(2 * math.pi))) * math.exp(-0.5 * (distance / (iv * math.sqrt(t_days)))**2) / spot_price
+        except Exception:
+            approx_gamma = 0.0001 / max(1.0, abs(spot_price - strike))
 
-                    y_labels = []
-                    current_step = -fixed_bound
-                    while current_step <= fixed_bound:
-                        sign = "+" if current_step > 0 else ""
-                        label_text = f"{sign}{int(current_step)}M" if current_step != 0 else "0"
-                        y_labels.append(
-                            ft.ChartAxisLabel(
-                                value=current_step * 1000000.0,
-                                label=ft.Text(label_text, size=10, color=ft.colors.GREY_400)
-                            )
-                        )
-                        current_step += 50.0
-                    history_left_axis.labels = y_labels
+        gex_value = oi * approx_gamma * (spot_price ** 2) * 0.01
+        if option_type == 'P':
+            gex_value = -gex_value
+            
+        parsed_options.append({
+            'strike': strike, 
+            'type': option_type, 
+            'oi': oi, 
+            'volume': volume, 
+            'gex': gex_value,
+            'days_to_expiry': days_to_expiry
+        })
+        
+    base_df = pd.DataFrame(parsed_options)
+    if base_df.empty: return None
+    
+    df_3m = base_df[base_df['days_to_expiry'] <= 90.0]
+    df_3d = base_df[base_df['days_to_expiry'] <= 3.0]
+    if df_3d.empty: df_3d = df_3m
 
-                    line_points = []
-                    total_records = len(filtered_records)
-                    
-                    for idx, data in enumerate(filtered_records):
-                        # Map linearly over a 0 to 23 coordinate field
-                        x_pos = (idx / (total_records - 1)) * 23 if total_records > 1 else idx
-                        line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
-                    
-                    history_line_chart.data_series[0].data_points = line_points
+    call_df_3m = df_3m[df_3m['type'] == 'C']
+    put_df_3m = df_3m[df_3m['type'] == 'P']
+    
+    call_gex = call_df_3m['gex'].sum()
+    put_gex = put_df_3m['gex'].sum()
+    net_gex = call_gex + put_gex
+    net_gex_3m = net_gex
+    
+    total_abs_gex = abs(call_gex) + abs(put_gex)
+    call_weight_pct = (abs(call_gex) / total_abs_gex * 100) if total_abs_gex > 0 else 50.0
+    
+    call_df_3d = df_3d[df_3d['type'] == 'C']
+    put_df_3d = df_3d[df_3d['type'] == 'P']
+    
+    strikes_3d = sorted(df_3d['strike'].unique())
+    min_pain = float('inf')
+    max_pain_level = spot_price
+    
+    for s in strikes_3d:
+        pain = 0
+        for _, row in df_3d.iterrows():
+            if row['type'] == 'C' and row['strike'] < s: 
+                pain += (s - row['strike']) * row['oi']
+            elif row['type'] == 'P' and row['strike'] > s: 
+                pain += (row['strike'] - s) * row['oi']
+        if pain < min_pain:
+            min_pain = pain
+            max_pain_level = s
 
-                    # --- CHRONOLOGICAL X-AXIS LABELS (OLDEST LEFT -> NEWEST RIGHT) ---
-                    x_labels = []
-                    current_utc_hour = time_now.hour
-                    
-                    for i in range(0, 24, 3):
-                        # i=0 represents 24 hours ago (Left side), i=23 represents now (Right side)
-                        target_hour = (current_utc_hour - 24 + i) % 24
-                        x_coord = (i / 24) * 23
-                        
-                        x_labels.append(
-                            ft.ChartAxisLabel(
-                                value=x_coord,
-                                label=ft.Text(f"{target_hour:02d}:00", size=10, color=ft.colors.GREY_500, weight=ft.FontWeight.W_500)
-                            )
-                        )
-                    history_bottom_axis.labels = x_labels
+    df_3d_copy = df_3d.copy()
+    df_3d_copy['macro_bucket'] = df_3d_copy['strike'].apply(lambda x: round(x / 1000.0) * 1000)
+    macro_grouped = df_3d_copy.groupby('macro_bucket')['gex'].sum().sort_index()
 
-            except Exception as ex:
-                print(f"Cloud Read Failure: {ex}")
+    flip_level = spot_price
+    if not macro_grouped.empty:
+        buckets_list = macro_grouped.index.tolist()
+        for i in range(len(buckets_list) - 1):
+            b1, b2 = buckets_list[i], buckets_list[i+1]
+            g1, g2 = macro_grouped.loc[b1], macro_grouped.loc[b2]
+            
+            if (g1 < 0 and g2 > 0) or (g1 > 0 and g2 < 0):
+                flip_level = b1 - g1 * (b2 - b1) / (g2 - g1)
+                flip_level = round(flip_level)
+                break
+
+    call_strike_gex_3d = call_df_3d.groupby('strike')['gex'].sum()
+    put_strike_gex_3d = put_df_3d.groupby('strike')['gex'].sum().abs()
+    
+    resistance_level = call_strike_gex_3d.idxmax() if not call_strike_gex_3d.empty else spot_price * 1.02
+    support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
+    breakout_price = resistance_level * 1.002
+
+    call_vol_3m = call_df_3m['volume'].sum()
+    put_vol_3m = put_df_3m['volume'].sum()
+    
+    signed_call_inflow = call_vol_3m if call_gex >= 0 else -call_vol_3m
+    signed_put_inflow = put_vol_3m if put_gex >= 0 else -put_vol_3m
+    net_flow = signed_call_inflow - signed_put_inflow
+    
+    call_oi_3m = call_df_3m['oi'].sum()
+    put_oi_3m = put_df_3m['oi'].sum()
+    cp_ratio = put_oi_3m / call_oi_3m if call_oi_3m > 0 else 0
+
+    center_spot_1k = round(spot_price / 1000.0) * 1000
+    lower_bound = center_spot_1k - 8000
+    upper_bound = center_spot_1k + 8000
+    
+    df_chart_range = df_3d[(df_3d['strike'] >= lower_bound) & (df_3d['strike'] <= upper_bound)].copy()
+    if df_chart_range.empty:
+        df_chart_range = df_3m[(df_3m['strike'] >= lower_bound) & (df_3m['strike'] <= upper_bound)].copy()
+        
+    df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
+    df_chart_range['abs_gex_contribution'] = df_chart_range['gex'].abs()
+    bucket_data = df_chart_range.groupby('strike_bucket').agg({'gex': 'sum', 'abs_gex_contribution': 'sum'})
+    
+    target_buckets = list(range(int(lower_bound), int(upper_bound) + 1000, 1000))
+    chart_matrix = []
+    
+    for idx, b_strike in enumerate(target_buckets):
+        gex_val = bucket_data.get('gex', {}).get(b_strike, 0.0)
+        abs_gex_val = bucket_data.get('abs_gex_contribution', {}).get(b_strike, 0.0)
+        chart_matrix.append({"index": idx, "strike": b_strike, "gex": gex_val, "abs_gex": abs_gex_val})
+
+    return {
+        "spot": spot_price, "call_gex": call_gex, "put_gex": put_gex, "net_gex": net_gex,
+        "net_gex_3m": net_gex_3m,
+        "call_weight": call_weight_pct, "max_pain": max_pain_level, "flip": flip_level,
+        "breakout": breakout_price, "resistance": resistance_level, "support": support_level,
+        "call_inflow": signed_call_inflow, "put_inflow": signed_put_inflow,
+        "net_flow": net_flow, "cp_ratio": cp_ratio, "chart_data": chart_matrix
+    }
+
+def fmt_gex(val):
+    sign = "+" if val >= 0 else "-"
+    abs_val = abs(val)
+    return f"{sign}{abs_val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{abs_val:.1f}"
+
+def fmt_inflow(val):
+    sign = "+" if val >= 0 else ""
+    abs_val = abs(val)
+    return f"{sign}{val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{val:.0f}"
+
+def main(page: ft.Page):
+    page.title = "Deribit GEX Terminal"
+    page.theme_mode = ft.ThemeMode.DARK
+    page.scroll = ft.ScrollMode.AUTO
+    page.padding = 14
+
+    net_axis = ft.ChartAxis(labels=[], labels_size=24)
+    abs_axis = ft.ChartAxis(labels=[], labels_size=24)
+    
+    history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
+    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
+
+    spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
+    call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
+    put_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.RED_400)
+    net_gex_txt = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
+    weight_txt =
