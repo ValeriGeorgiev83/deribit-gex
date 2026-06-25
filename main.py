@@ -5,7 +5,7 @@ import os
 import math
 from datetime import datetime, timezone
 
-# --- FIXED: BINANCE KLINE CVD ENGINE ---
+# --- FIXED: STRONG CAST BINANCE KLINE CVD ENGINE ---
 def fetch_binance_cvd_change(symbol="BTCUSDT", is_futures=False):
     """
     Extracts accurate periodic CVD by reading native taker volume metrics 
@@ -19,17 +19,16 @@ def fetch_binance_cvd_change(symbol="BTCUSDT", is_futures=False):
     
     for key, timeframe in intervals.items():
         try:
-            # Request the single most recent candle block for the interval
             params = {"symbol": symbol, "interval": timeframe, "limit": 1}
             res = requests.get(endpoint, params=params).json()
             
             if isinstance(res, list) and len(res) > 0:
                 candle = res[0]
-                total_vol = float(candle[5])        # Total Base Asset Volume
-                taker_buy_vol = float(candle[9])    # Taker Buy Base Asset Volume
+                # Force float conversions explicitly to handle raw text string structures from Spot API
+                total_vol = float(candle[5])        # Index 5: Total Base Asset Volume
+                taker_buy_vol = float(candle[9])    # Index 9: Taker Buy Base Asset Volume
                 taker_sell_vol = total_vol - taker_buy_vol
                 
-                # CVD Calculation: Taker Buys minus Taker Sells
                 results[key] = taker_buy_vol - taker_sell_vol
         except Exception:
             results[key] = 0.0
@@ -221,7 +220,6 @@ def fmt_inflow(val):
         return f"{sign}{val/1000:.1f}k"
     return f"{sign}{val:.0f}"
 
-# Updated tracking formatting
 def fmt_cvd(val):
     sign = "+" if val >= 0 else ""
     abs_val = abs(val)
