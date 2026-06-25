@@ -177,7 +177,7 @@ def main(page: ft.Page):
     page.scroll = ft.ScrollMode.AUTO
     page.padding = 14
 
-    # Pre-initialized Axis objects to avoid Flet NoneType errors
+    # Independent Axis Objects
     net_axis = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
 
@@ -201,12 +201,13 @@ def main(page: ft.Page):
                                 vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
                                 animate=True, interactive=True, height=240)
 
-    abs_gex_chart = ft.LineChart(
-        data_series=[],
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=50000000),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+    # MODIFIED: Now a BarChart to allow exact axis synchronization
+    abs_gex_chart = ft.BarChart(
+        bar_groups=[],
         bottom_axis=abs_axis,
-        animate=True, height=240
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        animate=True, interactive=True, height=240
     )
 
     def create_section_header(title):
@@ -237,7 +238,7 @@ def main(page: ft.Page):
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            new_groups, new_labels, abs_points, min_dist, spot_index = [], [], [], float('inf'), -1
+            new_groups, abs_groups, new_labels, min_dist, spot_index = [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist: min_dist, spot_index = dist, item['index']
@@ -245,7 +246,9 @@ def main(page: ft.Page):
             for item in m['chart_data']:
                 val, abs_val, strike_val, is_spot = item['gex'], item['abs_gex'], item['strike'], (item['index'] == spot_index)
                 new_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val, color=ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
-                abs_points.append(ft.LineChartDataPoint(item['index'], abs_val))
+                # NEW: Yellow bars for absolute GEX
+                abs_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_val, color=ft.colors.YELLOW, width=12, border_radius=2)]))
+                
                 if strike_val % 2000 == 0:
                     label_color = ft.colors.BLUE_200 if is_spot else ft.colors.GREY_400
                     new_labels.append(ft.ChartAxisLabel(value=item['index'], label=ft.Text(f"{strike_val/1000:.0f}k", size=10, color=label_color, rotate=45, weight=ft.FontWeight.BOLD if is_spot else ft.FontWeight.NORMAL)))
@@ -253,7 +256,7 @@ def main(page: ft.Page):
             gex_bar_chart.bar_groups = new_groups
             net_axis.labels = new_labels
             
-            abs_gex_chart.data_series = [ft.LineChartData(data_points=abs_points, color=ft.colors.YELLOW, curved=True, stroke_width=3, below_line_bgcolor=ft.colors.with_opacity(0.2, ft.colors.YELLOW))]
+            abs_gex_chart.bar_groups = abs_groups
             abs_axis.labels = new_labels
             
             page.update()
