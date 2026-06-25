@@ -5,12 +5,14 @@ import os
 import math
 from datetime import datetime, timezone
 
-# --- FIXED: STRONG CAST BINANCE KLINE CVD ENGINE ---
+# --- FIXED: BULLETPROOF CVD ENGINE WITH API FALLBACKS ---
 def fetch_binance_cvd_change(symbol="BTCUSDT", is_futures=False):
     """
-    Extracts accurate periodic CVD by reading native taker volume metrics 
-    from open candlestick data blocks, avoiding trade pagination limits.
+    Extracts accurate periodic CVD by reading native taker volume metrics.
+    Handles strict string typecasting and symbol formatting requirements.
     """
+    # Force uppercase for Binance strictness
+    symbol = symbol.upper()
     base_url = "https://fapi.binance.com" if is_futures else "https://api.binance.com"
     endpoint = f"{base_url}/fapi/v1/klines" if is_futures else f"{base_url}/api/v3/klines"
     
@@ -22,16 +24,31 @@ def fetch_binance_cvd_change(symbol="BTCUSDT", is_futures=False):
             params = {"symbol": symbol, "interval": timeframe, "limit": 1}
             res = requests.get(endpoint, params=params).json()
             
-            if isinstance(res, list) and len(res) > 0:
+            # Verify we got a valid candle list back, not an error dictionary
+            if isinstance(res, list) and len(res) > 0 and isinstance(res[0], list):
                 candle = res[0]
-                # Force float conversions explicitly to handle raw text string structures from Spot API
                 total_vol = float(candle[5])        # Index 5: Total Base Asset Volume
                 taker_buy_vol = float(candle[9])    # Index 9: Taker Buy Base Asset Volume
                 taker_sell_vol = total_vol - taker_buy_vol
                 
                 results[key] = taker_buy_vol - taker_sell_vol
+            else:
+                # Fallback to Taker Long/Short data API if Klines fail or return zero
+                raise ValueError("Switching to global taker metrics fallback")
+                
         except Exception:
-            results[key] = 0.0
+            # Global Taker Volume Fallback Engine
+            try:
+                fallback_url = "https://fapi.binance.com/futures/data/takerlongshortRatio"
+                fb_params = {"symbol": symbol, "period": timeframe, "limit": 1}
+                fb_res = requests.get(fallback_url, params=fb_params).json()
+                if isinstance(fb_res, list) and len(fb_res) > 0:
+                    data = fb_res[0]
+                    buy_vol = float(data.get('buyVol', 0))
+                    sell_vol = float(data.get('sellVol', 0))
+                    results[key] = buy_vol - sell_vol
+            except Exception:
+                results[key] = 0.0
             
     return results
 
@@ -248,239 +265,4 @@ def main(page: ft.Page):
     inflows_call_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     outflows_put_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     net_flow_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
-    cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
-
-    cvd_s_15m = ft.Text("0.00", weight=ft.FontWeight.W_600, size=14)
-    cvd_s_1h = ft.Text("0.00", weight=ft.FontWeight.W_600, size=14)
-    cvd_s_4h = ft.Text("0.00", weight=ft.FontWeight.W_600, size=14)
-
-    cvd_f_15m = ft.Text("0.00", weight=ft.FontWeight.W_600, size=14)
-    cvd_f_1h = ft.Text("0.00", weight=ft.FontWeight.W_600, size=14)
-    cvd_f_4h = ft.Text("0.00", weight=ft.FontWeight.W_600, size=14)
-
-    gex_bar_chart = ft.BarChart(
-        bar_groups=[],
-        bottom_axis=ft.ChartAxis(labels=[], labels_size=24),
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        animate=True,
-        interactive=True,
-        height=240
-    )
-
-    def create_section_header(title_name):
-        return ft.Container(
-            content=ft.Text(title_name, size=13, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_500),
-            margin=ft.margin.only(top=15, bottom=5)
-        )
-
-    def ui_row_item(label, component):
-        return ft.Container(
-            content=ft.Row([
-                ft.Text(label, size=14, color=ft.colors.GREY_300),
-                component
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            padding=ft.padding.symmetric(vertical=4)
-        )
-
-    def refresh_dashboard(e=None):
-        m = fetch_deribit_gex("BTC")
-        if m:
-            spot_txt.value = f"${m['spot']:,.2f}"
-            call_gex_txt.value = fmt_gex(m['call_gex'])
-            put_gex_txt.value = fmt_gex(m['put_gex'])
-            net_gex_txt.value = fmt_gex(m['net_gex'])
-            net_gex_txt.color = ft.colors.GREEN_400 if m['net_gex'] >= 0 else ft.colors.RED_400
-            weight_txt.value = f"{m['call_weight']:.1f}%"
-            
-            pain_txt.value = f"${m['max_pain']:,.0f}"
-            flip_txt.value = f"${m['flip']:,.0f}"
-            breakout_txt.value = f"${m['breakout']:,.0f}"
-            res_txt.value = f"${m['resistance']:,.0f}"
-            sup_txt.value = f"${m['support']:,.0f}"
-            
-            inflows_call_txt.value = fmt_inflow(m['call_inflow'])
-            inflows_call_txt.color = ft.colors.GREEN_400 if m['call_inflow'] >= 0 else ft.colors.RED_400
-            
-            outflows_put_txt.value = fmt_inflow(m['put_inflow'])
-            outflows_put_txt.color = ft.colors.GREEN_400 if m['put_inflow'] >= 0 else ft.colors.RED_400
-
-            net_flow_txt.value = fmt_gex(m['net_flow'])
-            net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
-            cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
-            
-            cvd_s_15m.value = fmt_cvd(m['cvd_spot']['15m'])
-            cvd_s_15m.color = ft.colors.GREEN_400 if m['cvd_spot']['15m'] >= 0 else ft.colors.RED_400
-            
-            cvd_s_1h.value = fmt_cvd(m['cvd_spot']['1h'])
-            cvd_s_1h.color = ft.colors.GREEN_400 if m['cvd_spot']['1h'] >= 0 else ft.colors.RED_400
-            
-            cvd_s_4h.value = fmt_cvd(m['cvd_spot']['4h'])
-            cvd_s_4h.color = ft.colors.GREEN_400 if m['cvd_spot']['4h'] >= 0 else ft.colors.RED_400
-
-            cvd_f_15m.value = fmt_cvd(m['cvd_futures']['15m'])
-            cvd_f_15m.color = ft.colors.GREEN_400 if m['cvd_futures']['15m'] >= 0 else ft.colors.RED_400
-            
-            cvd_f_1h.value = fmt_cvd(m['cvd_futures']['1h'])
-            cvd_f_1h.color = ft.colors.GREEN_400 if m['cvd_futures']['1h'] >= 0 else ft.colors.RED_400
-            
-            cvd_f_4h.value = fmt_cvd(m['cvd_futures']['4h'])
-            cvd_f_4h.color = ft.colors.GREEN_400 if m['cvd_futures']['4h'] >= 0 else ft.colors.RED_400
-
-            new_groups = []
-            new_labels = []
-            min_dist = float('inf')
-            spot_index_target = -1
-            
-            for item in m['chart_data']:
-                dist = abs(item['strike'] - m['spot'])
-                if dist < min_dist:
-                    min_dist = dist
-                    spot_index_target = item['index']
-
-            max_val = max([abs(item['gex']) for item in m['chart_data']]) if m['chart_data'] else 1.0
-            if max_val == 0: max_val = 1.0
-            gex_bar_chart.horizontal_grid_lines.interval = max_val / 3.0
-            
-            for item in m['chart_data']:
-                val = item['gex']
-                bar_color = ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400
-                strike_val = item['strike']
-                is_spot_bar = (item['index'] == spot_index_target)
-                
-                new_groups.append(
-                    ft.BarChartGroup(
-                        x=item['index'],
-                        bar_rods=[
-                            ft.BarChartRod(
-                                from_y=0,
-                                to_y=val,
-                                color=bar_color,
-                                width=12,
-                                border_radius=2
-                            )
-                        ]
-                    )
-                )
-                
-                if strike_val % 2000 == 0:
-                    new_labels.append(
-                        ft.ChartAxisLabel(
-                            value=item['index'],
-                            label=ft.Text(
-                                f"{strike_val/1000:.0f}k", 
-                                size=10, 
-                                color=ft.colors.BLUE_200 if is_spot_bar else ft.colors.GREY_400, 
-                                rotate=45,
-                                weight=ft.FontWeight.BOLD if is_spot_bar else ft.FontWeight.NORMAL
-                            )
-                        )
-                    )
-            
-            gex_bar_chart.bar_groups = new_groups
-            gex_bar_chart.bottom_axis.labels = new_labels
-            page.update()
-
-    page.add(
-        ft.Row([
-            ft.Text("⚡ Deribit Hybrid Terminal", size=20, weight=ft.FontWeight.BOLD),
-            ft.IconButton(icon=ft.icons.REFRESH, on_click=refresh_dashboard, icon_color=ft.colors.GREEN_ACCENT)
-        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        ft.Card(
-            content=ft.Container(
-                content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                padding=12
-            )
-        ),
-        create_section_header("NET GAMMA PROFILES BY STRIKE (EVEN $1000 INTERVALS | <= 3D)"),
-        ft.Card(
-            content=ft.Container(
-                padding=ft.padding.only(left=5, right=15, top=15, bottom=15),
-                content=gex_bar_chart
-            )
-        ),
-        create_section_header("TOTAL GAMMA EXPOSURE (<= 3M)"),
-        ft.Card(
-            content=ft.Container(
-                padding=14,
-                content=ft.Column([
-                    ui_row_item("Call Gamma", call_gex_txt),
-                    ui_row_item("Put Gamma", put_gex_txt),
-                    ui_row_item("Net Gamma", net_gex_txt),
-                    ui_row_item("Call Weight (%)", weight_txt),
-                ])
-            )
-        ),
-        create_section_header("IMPORTANT LEVELS (<= 3D)"),
-        ft.Card(
-            content=ft.Container(
-                padding=14,
-                content=ft.Column([
-                    ui_row_item("Max Pain", pain_txt),
-                    ui_row_item("Flip Zone", flip_txt),
-                    ui_row_item("Breakout Price", breakout_txt),
-                    ui_row_item("Resistance Level", res_txt),
-                    ui_row_item("Support Level", sup_txt),
-                ])
-            )
-        ),
-        
-        create_section_header("BINANCE DATA"),
-        ft.Card(
-            content=ft.Container(
-                padding=14,
-                content=ft.Column([
-                    ft.Row([
-                        ft.Text("Interval", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_400),
-                        ft.Row([
-                            ft.Container(content=ft.Text("15min", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_400), width=80, alignment=ft.alignment.center),
-                            ft.Container(content=ft.Text("1hr", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_400), width=80, alignment=ft.alignment.center),
-                            ft.Container(content=ft.Text("4hr", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_400), width=80, alignment=ft.alignment.center),
-                        ], spacing=10)
-                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    ft.Divider(color=ft.colors.GREY_800, height=10),
-                    
-                    ft.Row([
-                        ft.Text("CVD Spot", size=14, weight=ft.FontWeight.W_500, color=ft.colors.GREY_100),
-                        ft.Row([
-                            ft.Container(content=cvd_s_15m, width=80, alignment=ft.alignment.center),
-                            ft.Container(content=cvd_s_1h, width=80, alignment=ft.alignment.center),
-                            ft.Container(content=cvd_s_4h, width=80, alignment=ft.alignment.center),
-                        ], spacing=10)
-                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    
-                    ft.Row([
-                        ft.Text("CVD Futures", size=14, weight=ft.FontWeight.W_500, color=ft.colors.GREY_100),
-                        ft.Row([
-                            ft.Container(content=cvd_f_15m, width=80, alignment=ft.alignment.center),
-                            ft.Container(content=cvd_f_1h, width=80, alignment=ft.alignment.center),
-                            ft.Container(content=cvd_f_4h, width=80, alignment=ft.alignment.center),
-                        ], spacing=10)
-                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                ])
-            )
-        ),
-        
-        create_section_header("INFLOW ANALYSIS (<= 3M)"),
-        ft.Card(
-            content=ft.Container(
-                padding=14,
-                content=ft.Column([
-                    ui_row_item("24h Call Inflows", inflows_call_txt),
-                    ui_row_item("24h Put Inflows", outflows_put_txt),
-                    ui_row_item("Net Volume Bias", net_flow_txt),
-                    ui_row_item("C/P Ratio", cp_ratio_txt),
-                ])
-            )
-        )
-    )
-    refresh_dashboard()
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    ft.app(
-        target=main, 
-        port=port, 
-        host="0.0.0.0", 
-        view=ft.AppView.WEB_BROWSER
-    )
+    cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.
