@@ -186,26 +186,20 @@ def main(page: ft.Page):
     net_flow_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
 
-    v_lines_map = {}
-    spot_index_target = -1
-
-    def vertical_grid_eval(val):
-        return v_lines_map.get(int(val), False)
-
     gex_bar_chart = ft.BarChart(
         bar_groups=[],
         bottom_axis=ft.ChartAxis(labels=[], labels_size=22),
         horizontal_grid_lines=ft.ChartGridLines(
             color=ft.colors.GREY_800,
-            width=1.0,
-            interval=50000
+            width=0.8,
+            interval=1.0  # Set standard step
         ),
         vertical_grid_lines=ft.ChartGridLines(
             color=ft.colors.GREY_800,
             width=0.6,
-            interval=1,
-            check_handler=vertical_grid_eval
+            interval=2  # Draws a clean line exactly every $1000 step (since our data array is built in $500 increments)
         ),
+        vertical_lines=[],  # Dynamic spot highlighters map here
         animate=True,
         interactive=True,
         height=240
@@ -227,7 +221,6 @@ def main(page: ft.Page):
         )
 
     def refresh_dashboard(e=None):
-        nonlocal spot_index_target, v_lines_map
         m = fetch_deribit_gex("BTC")
         if m:
             spot_txt.value = f"${m['spot']:,.2f}"
@@ -251,7 +244,6 @@ def main(page: ft.Page):
             
             new_groups = []
             new_labels = []
-            v_lines_map.clear()
             
             min_dist = float('inf')
             spot_index_target = -1
@@ -261,17 +253,16 @@ def main(page: ft.Page):
                 if dist < min_dist:
                     min_dist = dist
                     spot_index_target = item['index']
+
+            # Dynamically normalize horizontal line interval bounds based on current data volatility peaks
+            max_val = max([abs(item['gex']) for item in m['chart_data']]) if m['chart_data'] else 1.0
+            if max_val == 0: max_val = 1.0
+            gex_bar_chart.horizontal_grid_lines.interval = max_val / 4.0
             
             for item in m['chart_data']:
                 val = item['gex']
                 bar_color = ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400
                 strike_val = item['strike']
-                
-                if strike_val % 1000 == 0:
-                    v_lines_map[item['index']] = True
-                
-                # Check line parameters for special spot vertical accent line
-                is_spot_bar = (item['index'] == spot_index_target)
                 
                 new_groups.append(
                     ft.BarChartGroup(
@@ -280,8 +271,8 @@ def main(page: ft.Page):
                             ft.BarChartRod(
                                 from_y=0,
                                 to_y=val,
-                                color=ft.colors.YELLOW_ACCENT_400 if is_spot_bar else bar_color,
-                                width=11 if is_spot_bar else 9,
+                                color=bar_color,
+                                width=9,
                                 border_radius=2
                             )
                         ]
@@ -292,12 +283,23 @@ def main(page: ft.Page):
                     new_labels.append(
                         ft.ChartAxisLabel(
                             value=item['index'],
-                            label=ft.Text(f"{strike_val/1000:.0f}k", size=9, color=ft.colors.YELLOW_ACCENT_400 if is_spot_bar else ft.colors.GREY_400, rotate=45, weight=ft.FontWeight.BOLD if is_spot_bar else ft.FontWeight.NORMAL)
+                            label=ft.Text(f"{strike_val/1000:.0f}k", size=9, color=ft.colors.GREY_400, rotate=45)
                         )
                     )
             
             gex_bar_chart.bar_groups = new_groups
             gex_bar_chart.bottom_axis.labels = new_labels
+            
+            # Inject native yellow structural line over the spot profile coordinate
+            if spot_index_target != -1:
+                gex_bar_chart.vertical_lines = [
+                    ft.ChartVerticalLine(
+                        x=spot_index_target,
+                        color=ft.colors.YELLOW_ACCENT_400,
+                        width=2.0
+                    )
+                ]
+            
             page.update()
 
     page.add(
