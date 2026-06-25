@@ -10,7 +10,7 @@ from datetime import datetime, timezone, timedelta
 from upstash_redis import Redis
 redis = Redis(
     url="https://large-ghost-131173.upstash.io", 
-    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0TzlhOWJmZGM1MTg5OWViZDIxMw"
+    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
 )
 REDIS_KEY = "deribit_gex_3d_history"
 REDIS_FLOW_KEY = "deribit_flow_24h_history"
@@ -147,7 +147,6 @@ def fetch_deribit_gex(currency="BTC"):
             amount = float(trade.get('amount', 0))
             trade_index_price = float(trade.get('index_price', spot_price))
             
-            # Formulating raw fiat cash positioning profile (Contracts * Strike Underlying Price Baseline)
             fiat_notional_value = amount * trade_index_price
             
             if ins_name.endswith('-C'):
@@ -251,7 +250,6 @@ def fmt_gex(val):
     abs_val = abs(val)
     return f"{sign}{abs_val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{abs_val:.1f}"
 
-# REVISED: Formats absolute fiat cash flow directly into Million Dollar strings ($M)
 def fmt_fiat_order_flow(val):
     sign = "+" if val >= 0 else ""
     millions_val = val / 1000000.0
@@ -267,8 +265,8 @@ def main(page: ft.Page):
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
-    # Increased labels_size to natively house timeline strings securely inside the canvas margins
-    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=20)
+    # Hide native bottom ticks completely to allow our Stack layout to lock alignment
+    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=0)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
@@ -313,7 +311,13 @@ def main(page: ft.Page):
         max_x=21,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
-        animate=True, interactive=True, height=240
+        animate=True, interactive=True, height=220 # Marginally lowered canvas height to create neat row overlay alignment room
+    )
+
+    # Re-implemented custom layout row container pinned to exact chart canvas bounds via left padding
+    native_timeline_container = ft.Container(
+        content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        padding=ft.padding.only(left=58, right=18)
     )
 
     def create_section_header(title):
@@ -337,7 +341,6 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}"
             
-            # Rendering values using formatted Dollar strings
             inflows_call_txt.value = fmt_fiat_order_flow(m['call_inflow'])
             inflows_call_txt.color = ft.colors.GREEN_400 if m['call_inflow'] >= 0 else ft.colors.RED_400
             
@@ -369,18 +372,15 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- REVISED: NATIVE CANVAS-LOCKED BOTTOM TIMELINE AXIS ---
+            # --- GENERATE STEP LABELS ACROSS 21 HOURS ---
             current_utc_hour = time_now.hour
-            x_axis_labels = []
+            row_elements = []
             for step in range(0, 22, 3):
                 calculated_hour = (current_utc_hour - 21 + step) % 24
-                x_axis_labels.append(
-                    ft.ChartAxisLabel(
-                        value=float(step), # Binds coordinate directly onto grid interval vectors natively
-                        label=ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
-                    )
+                row_elements.append(
+                    ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
                 )
-            history_bottom_axis.labels = x_axis_labels
+            native_timeline_container.content.controls = row_elements
 
             # --- POPULATE ROLLING HISTORICAL TREND ---
             try:
@@ -411,8 +411,9 @@ def main(page: ft.Page):
                     filtered_records.sort(key=lambda x: x['epoch'])
 
                     gex_in_millions = [data['gex'] / 1000000.0 for data in filtered_records]
-                    max_m = max(gex_in_millions) if gex_in_millions else 50.0
-                    min_m = min(gex_in_millions) if gex_in_millions else -50.0
+                    # FIXED: Added sequence fallback values to prevent max() from throwing a chart-disappearing ValueError
+                    max_m = max(gex_in_millions, default=50.0)
+                    min_m = min(gex_in_millions, default=-50.0)
                     
                     largest_abs = max(abs(max_m), abs(min_m), 50.0)
                     fixed_bound = math.ceil(largest_abs / 50.0) * 50.0
@@ -475,8 +476,19 @@ def main(page: ft.Page):
         ft.Text("NET GAMMA EXPOSURE (21 HRS)", size=13, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_500),
         ft.Card(
             content=ft.Container(
-                padding=ft.padding.only(left=5, right=20, top=15, bottom=15), 
-                content=history_line_chart # Removed native wrapper row to utilize internal chart canvas labeling cleanly
+                padding=ft.padding.only(left=5, right=20, top=15, bottom=10), 
+                content=ft.Stack([
+                    # Layer 1: Line Chart
+                    ft.Column([
+                        history_line_chart,
+                        ft.Container(height=14)
+                    ]),
+                    # Layer 2: Time Container row explicitly locked with 58px offset padding to perfectly match grid vertical lines
+                    ft.Container(
+                        content=native_timeline_container,
+                        bottom=0, left=0, right=0
+                    )
+                ])
             )
         ),
         
