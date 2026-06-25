@@ -97,12 +97,20 @@ def fetch_deribit_gex(currency="BTC"):
             min_pain = pain
             max_pain_level = s
 
+    # STRUCTURAL FLIP CALCULATOR: Aligns with chart-level intervals
     grouped_gex_3d = df_3d.groupby('strike')['gex'].sum().sort_index()
     flip_level = spot_price
-    for i in range(len(grouped_gex_3d) - 1):
-        if (grouped_gex_3d.iloc[i] < 0 and grouped_gex_3d.iloc[i+1] > 0) or (grouped_gex_3d.iloc[i] > 0 and grouped_gex_3d.iloc[i+1] < 0):
-            flip_level = grouped_gex_3d.index[i]
-            break
+    if not grouped_gex_3d.empty:
+        strikes_list = grouped_gex_3d.index.tolist()
+        for i in range(len(strikes_list) - 1):
+            s1, s2 = strikes_list[i], strikes_list[i+1]
+            g1, g2 = grouped_gex_3d.loc[s1], grouped_gex_3d.loc[s2]
+            
+            # Look for true cumulative crossover boundary
+            if (g1 < 0 and g2 > 0) or (g1 > 0 and g2 < 0):
+                flip_level = s1 - g1 * (s2 - s1) / (g2 - g1)
+                flip_level = round(flip_level)
+                break
 
     call_strike_gex_3d = call_df_3d.groupby('strike')['gex'].sum()
     put_strike_gex_3d = put_df_3d.groupby('strike')['gex'].sum().abs()
