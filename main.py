@@ -192,7 +192,8 @@ def main(page: ft.Page):
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
-    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=20)
+    # Keeping timeline axis empty so the native row handles presentation completely
+    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=5)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
@@ -236,7 +237,13 @@ def main(page: ft.Page):
         max_x=24,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
-        animate=True, interactive=True, height=260
+        animate=True, interactive=True, height=240
+    )
+
+    # Immutable native Flet row placeholder layout directly aligned beneath chart canvas grid
+    native_timeline_container = ft.Container(
+        content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        padding=ft.padding.only(left=44, right=14, top=2)
     )
 
     def create_section_header(title):
@@ -279,31 +286,15 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- BYPASS ENGINE: GENERATE SINGLE UNBREAKABLE CUSTOM ROW CONTROL ---
+            # --- IMMUNE TIMELINE ROW REFRESH ---
             current_utc_hour = time_now.hour
-            row_items = []
-            
+            row_elements = []
             for step in range(0, 25, 3):
                 calculated_hour = (current_utc_hour - 24 + step) % 24
-                row_items.append(
+                row_elements.append(
                     ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
                 )
-            
-            # Anchor single full width container row to center canvas coordinate (x=12)
-            history_bottom_axis.labels = [
-                ft.ChartAxisLabel(
-                    value=12.0,
-                    label=ft.Container(
-                        content=ft.Row(
-                            controls=row_items,
-                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN
-                        ),
-                        # Exact proportional padding offset keeping timeline matched to edges
-                        padding=ft.padding.only(left=22, right=22),
-                        width=page.width if page.width else 360
-                    )
-                )
-            ]
+            native_timeline_container.content.controls = row_elements
 
             # --- POPULATE ROLLING 24-HOUR HISTORICAL TREND ---
             try:
@@ -391,7 +382,15 @@ def main(page: ft.Page):
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
         create_section_header("NET GAMMA EXPOSURE (24 HRS)"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=20, top=15, bottom=20), content=history_line_chart)),
+        ft.Card(
+            content=ft.Container(
+                padding=ft.padding.only(left=5, right=20, top=15, bottom=15), 
+                content=ft.Column([
+                    history_line_chart,
+                    native_timeline_container  # Placed outside the chart canvas layout tree
+                ], spacing=0)
+            )
+        ),
         
         create_section_header("NET GAMMA PROFILES BY STRIKE"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart)),
