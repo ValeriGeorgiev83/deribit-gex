@@ -60,7 +60,6 @@ def fetch_deribit_gex(currency="BTC"):
             'oi': oi, 
             'volume': volume, 
             'gex': gex_value,
-            'abs_gex': abs(gex_value),
             'days_to_expiry': days_to_expiry
         })
         
@@ -142,14 +141,17 @@ def fetch_deribit_gex(currency="BTC"):
         df_chart_range = df_3m[(df_3m['strike'] >= lower_bound) & (df_3m['strike'] <= upper_bound)].copy()
         
     df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
+    # MODIFIED: Calculate Gross Gamma contribution per row
+    df_chart_range['abs_gex_contribution'] = df_chart_range['gex'].abs()
     
-    bucket_data = df_chart_range.groupby('strike_bucket').agg({'gex': 'sum', 'abs_gex': 'sum'})
+    bucket_data = df_chart_range.groupby('strike_bucket').agg({'gex': 'sum', 'abs_gex_contribution': 'sum'})
     target_buckets = list(range(int(lower_bound), int(upper_bound) + 1000, 1000))
     chart_matrix = []
     
     for idx, b_strike in enumerate(target_buckets):
         gex_val = bucket_data.get('gex', {}).get(b_strike, 0.0)
-        abs_gex_val = bucket_data.get('abs_gex', {}).get(b_strike, 0.0)
+        # Gross Gamma: total hedging effort regardless of net direction
+        abs_gex_val = bucket_data.get('abs_gex_contribution', {}).get(b_strike, 0.0)
         chart_matrix.append({"index": idx, "strike": b_strike, "gex": gex_val, "abs_gex": abs_gex_val})
 
     return {
@@ -176,7 +178,6 @@ def main(page: ft.Page):
     page.scroll = ft.ScrollMode.AUTO
     page.padding = 14
 
-    # UI Components
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
     put_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.RED_400)
@@ -255,16 +256,7 @@ def main(page: ft.Page):
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         create_section_header("NET GAMMA PROFILES BY STRIKE"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart)),
-        create_section_header("ABS GEX"),
+        create_section_header("ABS GEX (GROSS HEDGING ACTIVITY)"),
         ft.Card(content=ft.Container(padding=15, content=abs_gex_chart)),
         create_section_header("TOTAL GAMMA EXPOSURE"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Call Gamma", call_gex_txt), ui_row_item("Put Gamma", put_gex_txt), ui_row_item("Net Gamma", net_gex_txt), ui_row_item("Call Weight (%)", weight_txt)]))),
-        create_section_header("IMPORTANT LEVELS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
-        create_section_header("INFLOW ANALYSIS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("24h Call Inflows", inflows_call_txt), ui_row_item("24h Put Inflows", outflows_put_txt), ui_row_item("Net Volume Bias", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
-    )
-    refresh_dashboard()
-
-if __name__ == "__main__":
-    ft.app(target=main, port=int(os.environ.get("PORT", 8080)), host="0.0.0.0", view=ft.AppView.WEB_BROWSER)
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Call Gamma
