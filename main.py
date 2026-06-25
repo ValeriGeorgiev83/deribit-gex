@@ -191,15 +191,12 @@ def main(page: ft.Page):
         bottom_axis=ft.ChartAxis(labels=[], labels_size=22),
         horizontal_grid_lines=ft.ChartGridLines(
             color=ft.colors.GREY_800,
-            width=0.8,
-            interval=1.0  # Set standard step
+            width=0.5
         ),
         vertical_grid_lines=ft.ChartGridLines(
             color=ft.colors.GREY_800,
-            width=0.6,
-            interval=2  # Draws a clean line exactly every $1000 step (since our data array is built in $500 increments)
+            width=0.5
         ),
-        vertical_lines=[],  # Dynamic spot highlighters map here
         animate=True,
         interactive=True,
         height=240
@@ -254,28 +251,48 @@ def main(page: ft.Page):
                     min_dist = dist
                     spot_index_target = item['index']
 
-            # Dynamically normalize horizontal line interval bounds based on current data volatility peaks
+            # Dynamically handle grid spacing based on data scale
             max_val = max([abs(item['gex']) for item in m['chart_data']]) if m['chart_data'] else 1.0
             if max_val == 0: max_val = 1.0
-            gex_bar_chart.horizontal_grid_lines.interval = max_val / 4.0
+            
+            # Normalizing intervals securely
+            gex_bar_chart.horizontal_grid_lines.interval = max_val / 3.0
+            gex_bar_chart.vertical_grid_lines.interval = 2.0  # Clear grid layout line every 2 steps ($1000)
             
             for item in m['chart_data']:
                 val = item['gex']
                 bar_color = ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400
                 strike_val = item['strike']
+                is_spot_bar = (item['index'] == spot_index_target)
+                
+                rods = []
+                # Core metric bar
+                rods.append(
+                    ft.BarChartRod(
+                        from_y=0,
+                        to_y=val,
+                        color=bar_color,
+                        width=8,
+                        border_radius=2
+                    )
+                )
+                
+                # If this index is closest to spot, inject an additional vivid full-height yellow tracker rod inside the group!
+                if is_spot_bar:
+                    rods.append(
+                        ft.BarChartRod(
+                            from_y=-max_val,
+                            to_y=max_val,
+                            color=ft.colors.YELLOW_ACCENT_400,
+                            width=2,
+                            border_radius=0
+                        )
+                    )
                 
                 new_groups.append(
                     ft.BarChartGroup(
                         x=item['index'],
-                        bar_rods=[
-                            ft.BarChartRod(
-                                from_y=0,
-                                to_y=val,
-                                color=bar_color,
-                                width=9,
-                                border_radius=2
-                            )
-                        ]
+                        bar_rods=rods
                     )
                 )
                 
@@ -283,23 +300,18 @@ def main(page: ft.Page):
                     new_labels.append(
                         ft.ChartAxisLabel(
                             value=item['index'],
-                            label=ft.Text(f"{strike_val/1000:.0f}k", size=9, color=ft.colors.GREY_400, rotate=45)
+                            label=ft.Text(
+                                f"{strike_val/1000:.0f}k", 
+                                size=9, 
+                                color=ft.colors.YELLOW_ACCENT_400 if is_spot_bar else ft.colors.GREY_400, 
+                                rotate=45,
+                                weight=ft.FontWeight.BOLD if is_spot_bar else ft.FontWeight.NORMAL
+                            )
                         )
                     )
             
             gex_bar_chart.bar_groups = new_groups
             gex_bar_chart.bottom_axis.labels = new_labels
-            
-            # Inject native yellow structural line over the spot profile coordinate
-            if spot_index_target != -1:
-                gex_bar_chart.vertical_lines = [
-                    ft.ChartVerticalLine(
-                        x=spot_index_target,
-                        color=ft.colors.YELLOW_ACCENT_400,
-                        width=2.0
-                    )
-                ]
-            
             page.update()
 
     page.add(
