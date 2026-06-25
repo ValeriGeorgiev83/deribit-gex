@@ -192,7 +192,12 @@ def main(page: ft.Page):
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
-    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
+    
+    # FIXED: Reconfigured bottom axis to dynamically format calculations step intervals natively
+    history_bottom_axis = ft.ChartAxis(
+        labels_size=24,
+        labels_interval=3
+    )
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
@@ -221,7 +226,6 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # FIXED: Reset max_x to 24 to match perfectly with 3-hour grid intervals
     history_line_chart = ft.LineChart(
         data_series=[
             ft.LineChartData(
@@ -280,19 +284,15 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- DYNAMIC PERSISTENT TIMESTAMPS GENERATOR ---
-            # FIXED: Loop accurately up to 24 inclusive to bind cleanly with grid coordinates
-            x_labels = []
+            # --- FIXED: 2-DIGIT 24-HOUR HOUR-ONLY FORMAT FUNCTION ---
             current_utc_hour = time_now.hour
-            for i in range(0, 25, 3):
-                target_hour = (current_utc_hour - 24 + i) % 24
-                x_labels.append(
-                    ft.ChartAxisLabel(
-                        value=float(i),
-                        label=ft.Text(f"{target_hour:02d}:00", size=10, color=ft.colors.GREY_500, weight=ft.FontWeight.W_500)
-                    )
-                )
-            history_bottom_axis.labels = x_labels
+            
+            def format_bottom_labels(val):
+                # Calculate corresponding point in historical timeline relative to coordinate position
+                target_hour = (current_utc_hour - 24 + int(val)) % 24
+                return f"{target_hour:02d}"
+
+            history_bottom_axis.on_preview_title = format_bottom_labels
 
             # --- POPULATE ROLLING 24-HOUR HISTORICAL TREND ---
             try:
@@ -341,7 +341,6 @@ def main(page: ft.Page):
                         current_step += 50.0
                     history_left_axis.labels = y_labels
 
-                    # FIXED: Offset coordinate layout mapping on a 24 base coordinate index
                     line_points = []
                     for data in filtered_records:
                         x_pos = 24.0 - data['hours_ago']
