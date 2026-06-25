@@ -128,6 +128,32 @@ def fetch_deribit_gex(currency="BTC"):
     put_oi_3m = put_df_3m['oi'].sum()
     cp_ratio = put_oi_3m / call_oi_3m if call_oi_3m > 0 else 0
 
+    # --- NEW SECTION 4: NET GAMMA BY STRIKE CHART DATA (<= 3 Months, +/- $5000 range, $500 steps) ---
+    center_spot_500 = round(spot_price / 500.0) * 500
+    lower_bound = center_spot_500 - 5000
+    upper_bound = center_spot_500 + 5000
+    
+    # Filter 3-Month options strictly inside our strategic chart window bounds
+    df_chart_range = df_3m[(df_3m['strike'] >= lower_bound) & (df_3m['strike'] <= upper_bound)].copy()
+    
+    # Bin each contract's strike to the closest $500 step
+    df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 500.0) * 500)
+    
+    # Calculate Net GEX for each $500 increment bucket
+    bucket_gex = df_chart_range.groupby('strike_bucket')['gex'].sum()
+    
+    # Create the complete set of continuous $500 steps so there are no empty gaps in the chart layout
+    target_buckets = list(range(int(lower_bound), int(upper_bound) + 500, 500))
+    chart_matrix = []
+    
+    for idx, b_strike in enumerate(target_buckets):
+        gex_val = bucket_gex.get(b_strike, 0.0)
+        chart_matrix.append({
+            "index": idx,
+            "strike": b_strike,
+            "gex": gex_val
+        })
+
     return {
         "spot": spot_price,
         "call_gex": call_gex,
@@ -142,7 +168,8 @@ def fetch_deribit_gex(currency="BTC"):
         "call_vol": call_vol_3m,
         "put_vol": put_vol_3m,
         "net_flow": net_flow,
-        "cp_ratio": cp_ratio
+        "cp_ratio": cp_ratio,
+        "chart_data": chart_matrix
     }
 
 def fmt_gex(val):
@@ -175,6 +202,16 @@ def main(page: ft.Page):
     outflows_put_txt = ft.Text("-0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.RED_400)
     net_flow_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
+
+    # Instantiate the visual Flet Bar Chart component structure
+    gex_bar_chart = ft.BarChart(
+        bar_groups=[],
+        bottom_axis=ft.ChartAxis(labels=[], labels_size=22),
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        animate=True,
+        interactive=True,
+        height=220
+    )
 
     def create_section_header(title_name):
         return ft.Container(
@@ -215,6 +252,47 @@ def main(page: ft.Page):
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
+            
+            # --- DYNAMICALLY REBUILD BAR GROUPS FOR VISUALIZATION ---
+            new_groups = []
+            new_labels = []
+            
+            # Identify max absolute scale factor to prevent vertical layout clipping
+            max_abs_gex = max([abs(item['gex']) for item in m['chart_data']]) if m['chart_data'] else 1.0
+            if max_abs_gex == 0: max_abs_gex = 1.0
+            
+            for item in m['chart_data']:
+                val = item['gex']
+                # Determine colors based on sign direction
+                bar_color = ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400
+                
+                # Append formatted data point rod representation
+                new_groups.append(
+                    ft.BarChartGroup(
+                        x=item['index'],
+                        bar_rods=[
+                            ft.BarChartRod(
+                                from_y=0,
+                                to_y=val,
+                                color=bar_color,
+                                width=10,
+                                border_radius=2
+                            )
+                        ]
+                    )
+                )
+                
+                # Add step labels every 4 steps ($2,000 increments) to keep rendering clean on phone displays
+                if item['index'] % 4 == 0:
+                    new_labels.append(
+                        ft.ChartAxisLabel(
+                            value=item['index'],
+                            label=ft.Text(f"{item['strike']/1000:.1f}k", size=9, color=ft.colors.GREY_400, rotate=45)
+                        )
+                    )
+            
+            gex_bar_chart.bar_groups = new_groups
+            gex_bar_chart.bottom_axis.labels = new_labels
             page.update()
 
     page.add(
@@ -227,6 +305,14 @@ def main(page: ft.Page):
             content=ft.Container(
                 content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 padding=12
+            )
+        ),
+        
+        create_section_header("NET GAMMA PROFILES BY STRIKE (<= 3M)"),
+        ft.Card(
+            content=ft.Container(
+                padding=ft.padding.only(left=5, right=15, top=20, bottom=15),
+                content=gex_bar_chart
             )
         ),
         
@@ -274,5 +360,4 @@ def main(page: ft.Page):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    # Standardizing app presentation parameters for cloud container setups
     ft.app(target=main, port=port, host="0.0.0.0")
