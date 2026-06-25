@@ -23,7 +23,7 @@ def fetch_deribit_gex(currency="BTC"):
         spot_price = float(idx_res['result']['index_price'])
         
         opt_url = f"https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency={currency}&kind=option"
-        opt_res = requests.get(opt_url).json()
+        opt_res = requests.get(opt_res).json() if 'opt_res' in locals() else requests.get(opt_url).json()
         data_list = opt_res['result']
     except Exception:
         return None
@@ -193,11 +193,8 @@ def main(page: ft.Page):
     
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
     
-    # FIXED: Reconfigured bottom axis to dynamically format calculations step intervals natively
-    history_bottom_axis = ft.ChartAxis(
-        labels_size=24,
-        labels_interval=3
-    )
+    # FIXED: Return to clean explicit array labels architecture
+    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
@@ -284,15 +281,19 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- FIXED: 2-DIGIT 24-HOUR HOUR-ONLY FORMAT FUNCTION ---
+            # --- FIXED: EXPLICIT TIMELINE ARRAYS IN 2-DIGIT 24H HOUR FORMAT ---
             current_utc_hour = time_now.hour
+            y_timeline_labels = []
             
-            def format_bottom_labels(val):
-                # Calculate corresponding point in historical timeline relative to coordinate position
-                target_hour = (current_utc_hour - 24 + int(val)) % 24
-                return f"{target_hour:02d}"
-
-            history_bottom_axis.on_preview_title = format_bottom_labels
+            for step in range(0, 25, 3):
+                calculated_hour = (current_utc_hour - 24 + step) % 24
+                y_timeline_labels.append(
+                    ft.ChartAxisLabel(
+                        value=float(step),
+                        label=ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
+                    )
+                )
+            history_bottom_axis.labels = y_timeline_labels
 
             # --- POPULATE ROLLING 24-HOUR HISTORICAL TREND ---
             try:
