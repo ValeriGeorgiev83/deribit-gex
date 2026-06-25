@@ -27,7 +27,6 @@ def fetch_deribit_gex(currency="BTC"):
         volume = float(item.get('volume', 0))
         gamma = float(item.get('gamma', 0)) if item.get('gamma') is not None else 0.0
         
-        # Base structural calculation for Gamma Exposure
         gex_value = oi * gamma * spot_price
             
         parsed_options.append({
@@ -46,14 +45,13 @@ def fetch_deribit_gex(currency="BTC"):
     put_df = df[df['type'] == 'P']
     
     call_gex = call_df['gex'].sum()
-    put_gex = -put_df['gex'].sum() # Puts are mathematically represented as short dealer positions (-)
+    put_gex = -put_df['gex'].sum()
     net_gex = call_gex + put_gex
     
     total_abs_gex = abs(call_gex) + abs(put_gex)
     call_weight_pct = (abs(call_gex) / total_abs_gex * 100) if total_abs_gex > 0 else 0
     
     # --- SECTION 2: INSTITUTIONAL LEVEL ANALYSIS ---
-    # Max Pain calculation
     strikes = df['strike'].unique()
     min_pain = float('inf')
     max_pain_level = spot_price
@@ -66,7 +64,6 @@ def fetch_deribit_gex(currency="BTC"):
             min_pain = pain
             max_pain_level = s
 
-    # Locating Gamma Flip Level
     df['net_strike_gex'] = df.apply(lambda r: r['gex'] if r['type'] == 'C' else -r['gex'], axis=1)
     grouped_gex = df.groupby('strike')['net_strike_gex'].sum().sort_index()
     flip_level = spot_price
@@ -75,16 +72,12 @@ def fetch_deribit_gex(currency="BTC"):
             flip_level = grouped_gex.index[i]
             break
 
-    # Extract Key Support and Resistance Walls via Absolute Strike Clusters
     call_strike_gex = call_df.groupby('strike')['gex'].sum()
-    put_strike_gex = put_df['gex'].sum() # Base collection
-    
     resistance_level = call_strike_gex.idxmax() if not call_strike_gex.empty else spot_price * 1.05
     
     put_strike_profiles = put_df.groupby('strike')['gex'].sum()
     support_level = put_strike_profiles.idxmax() if not put_strike_profiles.empty else spot_price * 0.95
     
-    # Volatility Breakout trigger point (Concentrated upper hedging limit)
     breakout_price = resistance_level * 1.01
 
     # --- SECTION 3: INFLOW ANALYSIS ---
@@ -111,7 +104,6 @@ def fetch_deribit_gex(currency="BTC"):
     }
 
 def fmt_gex(val):
-    """Formats figures to compact k notation (e.g. +20.5k BTC or -5.1k BTC)"""
     sign = "+" if val >= 0 else "-"
     abs_val = abs(val)
     if abs_val >= 1000:
@@ -124,7 +116,6 @@ def main(page: ft.Page):
     page.scroll = ft.ScrollMode.AUTO
     page.padding = 14
 
-    # Text UI Component Hooks
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color="blue400")
     
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color="green400")
@@ -139,105 +130,4 @@ def main(page: ft.Page):
     sup_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color="pink400")
     
     inflows_call_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color="green400")
-    inflows_put_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color="red400")
-    cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color="cyan300")
-
-    def create_section_header(title_name):
-        return ft.Container(
-            content=ft.Text(title_name, size=13, weight=ft.FontWeight.BOLD, color="grey500", tracking_hint=1.2),
-            margin=ft.margin.only(top=15, bottom=5)
-        )
-
-    def ui_row_item(label, component):
-        return ft.Container(
-            content=ft.Row([
-                ft.Text(label, size=14, color="grey300"),
-                component
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            padding=ft.padding.symmetric(vertical=4)
-        )
-
-    def refresh_dashboard(e=None):
-        m = fetch_deribit_gex("BTC")
-        if m:
-            spot_txt.value = f"${m['spot']:,.2f}"
-            
-            # Update Section 1 UI elements
-            call_gex_txt.value = fmt_gex(m['call_gex'])
-            put_gex_txt.value = fmt_gex(m['put_gex'])
-            net_gex_txt.value = fmt_gex(m['net_gex'])
-            net_gex_txt.color = "green400" if m['net_gex'] >= 0 else "red400"
-            weight_txt.value = f"{m['call_weight']:.1f}%"
-            
-            # Update Section 2 UI elements
-            pain_txt.value = f"${m['max_pain']:,.0f}"
-            flip_txt.value = f"${m['flip']:,.0f}"
-            breakout_txt.value = f"${m['breakout']:,.0f}"
-            res_txt.value = f"${m['resistance']:,.0f}"
-            sup_txt.value = f"${m['support']:,.0f}"
-            
-            # Update Section 3 UI elements
-            inflows_call_txt.value = f"+{m['call_vol']/1000:.1f}k" if m['call_vol'] >= 1000 else f"+{m['call_vol']:.0f}"
-            inflows_put_txt.value = f"+{m['put_vol']/1000:.1f}k" if m['put_vol'] >= 1000 else f"+{m['put_vol']:.0f}"
-            cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
-            
-            page.update()
-
-    # Base Layout Rendering
-    page.add(
-        ft.Row([
-            ft.Text("⚡ Deribit Analytics", size=20, weight=ft.FontWeight.BOLD),
-            ft.IconButton(icon=ft.icons.REFRESH, on_click=refresh_dashboard, icon_color="greenaccent")
-        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        
-        ft.Card(
-            content=ft.Container(
-                content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color="grey500"), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                padding=12
-            )
-        ),
-        
-        # SECTION 1: TOTAL GAMMA EXPOSURE
-        create_section_header("TOTAL GAMMA EXPOSURE"),
-        ft.Card(
-            content=ft.Container(
-                content=ft.Column([
-                    ui_row_item("Call Gamma", call_gex_txt),
-                    ui_row_item("Put Gamma", put_gex_txt),
-                    ui_row_item("Net Gamma", net_gex_txt),
-                    ui_row_item("Call Weight (%)", weight_txt),
-                ]), padding=14
-            )
-        ),
-        
-        # SECTION 2: IMPORTANT LEVELS
-        create_section_header("IMPORTANT LEVELS"),
-        ft.Card(
-            content=ft.Container(
-                content=ft.Column([
-                    ui_row_item("Max Pain", pain_txt),
-                    ui_row_item("Flip Zone", flip_txt),
-                    ui_row_item("Breakout Price", breakout_txt),
-                    ui_row_item("Resistance Level", res_txt),
-                    ui_row_item("Support Level", sup_txt),
-                ]), padding=14
-            )
-        ),
-        
-        # SECTION 3: INFLOW ANALYSIS
-        create_section_header("INFLOW ANALYSIS"),
-        ft.Card(
-            content=ft.Container(
-                content=ft.Column([
-                    ui_row_item("24h Call Inflows", inflows_call_txt),
-                    ui_row_item("24h Put Inflows", inflows_put_txt),
-                    ui_row_item("C/P Ratio", cp_ratio_txt),
-                ]), padding=14
-            )
-        )
-    )
-    refresh_dashboard()
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    ft.app(target=main, port=port, host="0.0.0.0")
+    inflows_put_txt = ft.Text("0.0k", size=18, weight=ft.
