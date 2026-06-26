@@ -133,7 +133,7 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # --- Live Option Tape Directional Engine ---
+    # --- LIVE OPTION TAPE LOGIC ---
     net_call_fiat_flow = 0.0
     net_put_fiat_flow = 0.0
     try:
@@ -156,12 +156,12 @@ def fetch_deribit_gex(currency="BTC"):
                 if direction == 'buy': net_put_fiat_flow -= fiat_notional_value
                 else: net_put_fiat_flow += fiat_notional_value
     except Exception as ex:
-        print(f"Option Trade Fetch Interrupted: {ex}")
+        print(f"Option Tape Fetch Interrupted: {ex}")
 
     time_now = datetime.now(timezone.utc)
     current_ts = time_now.strftime("%m-%d %H:%M")
 
-    # --- Time-Based Historical Log Clean-Up Engine ---
+    # --- TIME-BASED HISTORICAL LOG CLEAN-UP ENGINE ---
     try:
         last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
         is_duplicate = False
@@ -263,7 +263,6 @@ def main(page: ft.Page):
     net_axis = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
-    # RESTORED FROM OLD WORKING VERSION: Clean initialization matching the original visual framework
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
     history_bottom_axis = ft.ChartAxis(labels=[], labels_size=0)
 
@@ -295,7 +294,7 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # RESTORED FROM OLD WORKING VERSION: Pure chart block constructor
+    # FIXED: Re-instated clean canvas definition directly matching your pristine working build configuration
     history_line_chart = ft.LineChart(
         data_series=[
             ft.LineChartData(
@@ -305,8 +304,6 @@ def main(page: ft.Page):
                 curved=True,
             )
         ],
-        left_axis=history_left_axis,
-        bottom_axis=history_bottom_axis,
         min_x=0,
         max_x=21,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
@@ -358,8 +355,13 @@ def main(page: ft.Page):
                 last_gex_element = redis.lindex(REDIS_KEY, -1)
                 is_gex_dup = False
                 if last_gex_element:
-                    if json.loads(last_gex_element).get("timestamp") == current_refresh_ts:
-                        is_gex_dup = True
+                    try:
+                        logged_data = json.loads(last_gex_element)
+                        logged_ts = logged_data.get("timestamp") or datetime.fromtimestamp(logged_data.get("epoch"), tz=timezone.utc).strftime("%m-%d %H:%M")
+                        if logged_ts == current_refresh_ts:
+                            is_gex_dup = True
+                    except Exception:
+                        pass
 
                 if not is_gex_dup:
                     snapshot = {
@@ -381,7 +383,7 @@ def main(page: ft.Page):
                 )
             native_timeline_container.content.controls = row_elements
 
-            # --- POPULATE ROLLING HISTORICAL TREND (RESTORED EXACT OLD PARSING BLOCK) ---
+            # --- POPULATE ROLLING HISTORICAL TREND ---
             try:
                 raw_records = redis.lrange(REDIS_KEY, 0, -1)
                 if raw_records:
@@ -390,7 +392,15 @@ def main(page: ft.Page):
                     for record in raw_records:
                         try:
                             data = json.loads(record)
-                            ts_str = data['timestamp']
+                            
+                            # Fallback logic handles string or float payloads cleanly
+                            if "timestamp" in data:
+                                ts_str = data['timestamp']
+                            elif "epoch" in data:
+                                ts_str = datetime.fromtimestamp(data['epoch'], tz=timezone.utc).strftime("%m-%d %H:%M")
+                            else:
+                                continue
+                                
                             if "-" in ts_str:
                                 rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
                             else:
@@ -401,13 +411,13 @@ def main(page: ft.Page):
                                 
                             hours_diff = (time_now - rec_time).total_seconds() / 3600.0
                             if hours_diff <= 21.0:
-                                data['epoch'] = rec_time.timestamp()
+                                data['epoch_track'] = rec_time.timestamp()
                                 data['hours_ago'] = hours_diff
                                 filtered_records.append(data)
                         except Exception:
                             continue
 
-                    filtered_records.sort(key=lambda x: x['epoch'])
+                    filtered_records.sort(key=lambda x: x['epoch_track'])
 
                     gex_in_millions = [data['gex'] / 1000000.0 for data in filtered_records]
                     max_m = max(gex_in_millions, default=50.0)
@@ -431,7 +441,11 @@ def main(page: ft.Page):
                             )
                         )
                         current_step += 50.0
+                    
+                    # FIXED: Apply structural labels dynamically here AFTER arrays have processed cleanly
                     history_left_axis.labels = y_labels
+                    history_line_chart.left_axis = history_left_axis
+                    history_line_chart.bottom_axis = history_bottom_axis
 
                     line_points = []
                     for data in filtered_records:
@@ -471,22 +485,7 @@ def main(page: ft.Page):
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
-        create_section_header("NET GAMMA EXPOSURE (24 HRS)"),
-        ft.Card(
-            content=ft.Container(
-                padding=ft.padding.only(left=5, right=20, top=15, bottom=10), 
-                content=ft.Stack([
-                    ft.Column([
-                        history_line_chart,
-                        ft.Container(height=14)
-                    ]),
-                    ft.Container(
-                        content=native_timeline_container,
-                        bottom=0, left=0, right=0
-                    )
-                ])
-            )
-        ),
+        
         
         create_section_header("NET GAMMA PROFILES BY STRIKE"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart)),
