@@ -279,9 +279,11 @@ def fmt_gex(val):
     abs_val = abs(val)
     return f"{sign}{abs_val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{abs_val:.1f}"
 
-def fmt_unsigned_fiat_flow(val):
-    millions_val = abs(val) / 1000000.0
-    return f"{millions_val:,.1f}M"
+# Customized snapshot signer framework for order flow card metrics
+def fmt_signed_flow(val):
+    sign = "+" if val > 0 else ""
+    millions_val = val / 1000000.0
+    return f"{sign}{millions_val:,.1f}M"
 
 def main(page: ft.Page):
     page.title = "Deribit GEX Terminal"
@@ -377,10 +379,8 @@ def main(page: ft.Page):
             net_gex_txt_3m.color = ft.colors.GREEN_400 if m['net_gex_3m'] >= 0 else ft.colors.RED_400
             weight_txt_3m.value = f"{m['call_weight_3m']:.1f}%"
 
-            # --- UPDATED: 3D OPTIONS PROFILE MAPS ---
+            # --- 3D OPTIONS PROFILE MAPS ---
             c_3d, p_3d, net_3d = m['call_gex_3d'], m['put_gex_3d'], m['net_gex_3d']
-            
-            # Call Gamma 3D: Positive -> Blue (Bearish) | Negative -> Orange/Gold (Bullish)
             if c_3d >= 0:
                 call_gex_txt_3d.value = f"{fmt_gex(c_3d)} (Bearish)"
                 call_gex_txt_3d.color = ft.colors.BLUE_400
@@ -388,7 +388,6 @@ def main(page: ft.Page):
                 call_gex_txt_3d.value = f"{fmt_gex(c_3d)} (Bullish)"
                 call_gex_txt_3d.color = ft.colors.ORANGE_400
                 
-            # FIXED: Put Gamma 3D: Positive -> Orange/Gold (Bullish) | Negative -> Blue (Bearish)
             if p_3d >= 0:
                 put_gex_txt_3d.value = f"{fmt_gex(p_3d)} (Bullish)"
                 put_gex_txt_3d.color = ft.colors.ORANGE_400
@@ -396,7 +395,6 @@ def main(page: ft.Page):
                 put_gex_txt_3d.value = f"{fmt_gex(p_3d)} (Bearish)"
                 put_gex_txt_3d.color = ft.colors.BLUE_400
 
-            # FIXED: Net Gamma 3D Color synchronized to match short term visual palette rules
             net_gex_txt_3d.value = fmt_gex(net_3d)
             net_gex_txt_3d.color = ft.colors.ORANGE_400 if net_3d >= 0 else ft.colors.BLUE_400
             weight_txt_3d.value = f"{m['call_weight_3d']:.1f}%"
@@ -418,12 +416,26 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}"
             
-            inflows_call_txt.value = fmt_unsigned_fiat_flow(m['call_inflow'])
-            inflows_call_txt.color = ft.colors.GREEN_400 if m['call_inflow'] >= 0 else ft.colors.RED_400
-            outflows_put_txt.value = fmt_unsigned_fiat_flow(m['put_inflow'])
-            outflows_put_txt.color = ft.colors.GREEN_400 if m['put_inflow'] >= 0 else ft.colors.RED_400
-            net_flow_txt.value = fmt_unsigned_fiat_flow(m['net_flow'])
-            net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
+            # --- MODIFIED: UPDATED 24H ACCUMULATED ORDER FLOW ANALYSIS CARD ---
+            c_flow, p_flow, net_bias = m['call_inflow'], m['put_inflow'], m['net_flow']
+            
+            # Call Inflows: Positive -> Green (+), Negative -> Red (-)
+            inflows_call_txt.value = fmt_signed_flow(c_flow)
+            if c_flow > 0: inflows_call_txt.color = ft.colors.GREEN_400
+            elif c_flow < 0: inflows_call_txt.color = ft.colors.RED_400
+            else: inflows_call_txt.color = ft.colors.GREY_400
+
+            # Put Inflows: Positive -> Red (+), Negative -> Green (-)
+            outflows_put_txt.value = fmt_signed_flow(p_flow)
+            if p_flow > 0: outflows_put_txt.color = ft.colors.RED_400
+            elif p_flow < 0: outflows_put_txt.color = ft.colors.GREEN_400
+            else: outflows_put_txt.color = ft.colors.GREY_400
+
+            # Premium Bias: Positive -> Green (+), Negative -> Red (-)
+            net_flow_txt.value = fmt_signed_flow(net_bias)
+            if net_bias > 0: net_flow_txt.color = ft.colors.GREEN_400
+            elif net_bias < 0: net_flow_txt.color = ft.colors.RED_400
+            else: net_flow_txt.color = ft.colors.GREY_400
             
             # --- REDIS LOGGING ENGINE ---
             time_now = datetime.now(timezone.utc)
