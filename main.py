@@ -234,7 +234,23 @@ def fetch_deribit_gex(currency="BTC"):
         
     df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     df_chart_range['abs_gex_contribution'] = df_chart_range['gex'].abs()
-    bucket_data = df_chart_range.groupby('strike_bucket').agg({'gex': 'sum', 'abs_gex_contribution': 'sum'})
+    
+    # --- ENGINE ADVANCED SEPARATION FOR THE NEW BREAKDOWN MATRIX ---
+    # Bullish Gamma: Retail buys Calls (gex < 0) or sells Puts (gex > 0)
+    df_chart_range['bullish_gex'] = df_chart_range.apply(
+        lambda r: abs(r['gex']) if (r['type'] == 'C' and r['gex'] < 0) or (r['type'] == 'P' and r['gex'] > 0) else 0.0, axis=1
+    )
+    # Bearish Gamma: Retail sells Calls (gex > 0) or buys Puts (gex < 0)
+    df_chart_range['bearish_gex'] = df_chart_range.apply(
+        lambda r: -abs(r['gex']) if (r['type'] == 'C' and r['gex'] > 0) or (r['type'] == 'P' and r['gex'] < 0) else 0.0, axis=1
+    )
+    
+    bucket_data = df_chart_range.groupby('strike_bucket').agg({
+        'gex': 'sum', 
+        'abs_gex_contribution': 'sum',
+        'bullish_gex': 'sum',
+        'bearish_gex': 'sum'
+    })
     
     target_buckets = list(range(int(lower_bound), int(upper_bound) + 1000, 1000))
     chart_matrix = []
@@ -242,7 +258,17 @@ def fetch_deribit_gex(currency="BTC"):
     for idx, b_strike in enumerate(target_buckets):
         gex_val = bucket_data.get('gex', {}).get(b_strike, 0.0)
         abs_gex_val = bucket_data.get('abs_gex_contribution', {}).get(b_strike, 0.0)
-        chart_matrix.append({"index": idx, "strike": b_strike, "gex": gex_val, "abs_gex": abs_gex_val})
+        bull_val = bucket_data.get('bullish_gex', {}).get(b_strike, 0.0)
+        bear_val = bucket_data.get('bearish_gex', {}).get(b_strike, 0.0)
+        
+        chart_matrix.append({
+            "index": idx, 
+            "strike": b_strike, 
+            "gex": gex_val, 
+            "abs_gex": abs_gex_val,
+            "bullish_gex": bull_val,
+            "bearish_gex": bear_val
+        })
 
     return {
         "spot": spot_price, 
@@ -270,6 +296,7 @@ def main(page: ft.Page):
 
     net_axis = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
+    breakdown_axis = ft.ChartAxis(labels=[], labels_size=24)
     
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
     history_bottom_axis = ft.ChartAxis(labels=[], labels_size=0)
@@ -282,11 +309,11 @@ def main(page: ft.Page):
     net_gex_txt_3m = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
     weight_txt_3m = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_300)
 
-    # 3D UI Elements (With Requested Color Replacements)
-    call_gex_txt_3d = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.ORANGE_400)     # Green -> Orange/Gold
-    put_gex_txt_3d = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.INDIGO_400)     # Red -> Navy Blue
+    # 3D UI Elements
+    call_gex_txt_3d = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.ORANGE_400)
+    put_gex_txt_3d = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.INDIGO_400)
     net_gex_txt_3d = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
-    weight_txt_3d = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_800)       # Blue -> Dark Violet
+    weight_txt_3d = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_800)
     
     pain_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600)
     flip_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.ORANGE_400)
@@ -310,6 +337,14 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
+    # --- NEW INTERACTIVE BREAKDOWN CANVAS INSTANTIATION ---
+    breakdown_gex_chart = ft.BarChart(
+        bar_groups=[], bottom_axis=breakdown_axis,
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        animate=True, interactive=True, height=240
+    )
+
     history_line_chart = ft.LineChart(
         data_series=[
             ft.LineChartData(
@@ -319,6 +354,8 @@ def main(page: ft.Page):
                 curved=True,
             )
         ],
+        left_axis=history_left_axis,
+        bottom_axis=history_bottom_axis,
         min_x=0,
         max_x=21,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
@@ -479,15 +516,26 @@ def main(page: ft.Page):
                 print(f"Cloud Read Failure: {ex}")
             
             # --- BAR CHARTS ENGINE ---
-            new_groups, abs_groups, new_labels, min_dist, spot_index = [], [], [], float('inf'), -1
+            new_groups, abs_groups, breakdown_groups, new_labels, min_dist, spot_index = [], [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist: min_dist, spot_index = dist, item['index']
             
             for item in m['chart_data']:
                 val, abs_val, strike_val, is_spot = item['gex'], item['abs_gex'], item['strike'], (item['index'] == spot_index)
+                bull_val, bear_val = item['bullish_gex'], item['bearish_gex']
+                
                 new_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val, color=ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
                 abs_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_val, color=ft.colors.YELLOW, width=12, border_radius=2)]))
+                
+                # --- RENDER TWO BARS PER STRIKE (IVORY & NAVY BLUE SIDE BY SIDE) ---
+                breakdown_groups.append(ft.BarChartGroup(
+                    x=item['index'],
+                    bar_rods=[
+                        ft.BarChartRod(from_y=0, to_y=bull_val, color="#FFFFF0", width=6, border_radius=1), # Light Ivory
+                        ft.BarChartRod(from_y=0, to_y=bear_val, color="#000080", width=6, border_radius=1)  # Navy Blue
+                    ]
+                ))
                 
                 if strike_val % 2000 == 0:
                     label_color = ft.colors.BLUE_200 if is_spot else ft.colors.GREY_400
@@ -498,6 +546,9 @@ def main(page: ft.Page):
             
             abs_gex_chart.bar_groups = abs_groups
             abs_axis.labels = new_labels
+            
+            breakdown_gex_chart.bar_groups = breakdown_groups
+            breakdown_axis.labels = new_labels
             
             page.update()
 
@@ -511,7 +562,10 @@ def main(page: ft.Page):
         create_section_header("ABSOLUTE GAMMA EXPOSURE"),
         ft.Card(content=ft.Container(padding=15, content=abs_gex_chart)),
         
-        # Original Total Gamma Exposure Card (Renamed to 3M)
+        # NEW REQUESTED GAMMA EXPOSURE BREAKDOWN BAR CARD SECTION
+        create_section_header("GAMMA EXPOSURE BREAKDOWN"),
+        ft.Card(content=ft.Container(padding=15, content=breakdown_gex_chart)),
+        
         create_section_header("TOTAL GAMMA EXPOSURE (3M)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("Call Gamma", call_gex_txt_3m), 
@@ -519,8 +573,6 @@ def main(page: ft.Page):
             ui_row_item("Net Gamma", net_gex_txt_3m), 
             ui_row_item("Call Weight (%)", weight_txt_3m)
         ]))),
-        
-        # NEW REQUESTED TOTAL GAMMA EXPOSURE CARD (3D with color updates)
         create_section_header("TOTAL GAMMA EXPOSURE (3D)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("Call Gamma", call_gex_txt_3d), 
@@ -528,7 +580,6 @@ def main(page: ft.Page):
             ui_row_item("Net Gamma", net_gex_txt_3d), 
             ui_row_item("Call Weight (%)", weight_txt_3d)
         ]))),
-        
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
