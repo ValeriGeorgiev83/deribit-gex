@@ -81,19 +81,27 @@ def fetch_deribit_gex(currency="BTC"):
     df_3d = base_df[base_df['days_to_expiry'] <= 3.0]
     if df_3d.empty: df_3d = df_3m
 
+    # --- 3M CALCULATION ENGINE ---
     call_df_3m = df_3m[df_3m['type'] == 'C']
     put_df_3m = df_3m[df_3m['type'] == 'P']
     
-    call_gex = call_df_3m['gex'].sum()
-    put_gex = put_df_3m['gex'].sum()
-    net_gex = call_gex + put_gex
-    net_gex_3m = net_gex
+    call_gex_3m = call_df_3m['gex'].sum()
+    put_gex_3m = put_df_3m['gex'].sum()
+    net_gex_3m = call_gex_3m + put_gex_3m
     
-    total_abs_gex = abs(call_gex) + abs(put_gex)
-    call_weight_pct = (abs(call_gex) / total_abs_gex * 100) if total_abs_gex > 0 else 50.0
+    total_abs_gex_3m = abs(call_gex_3m) + abs(put_gex_3m)
+    call_weight_pct_3m = (abs(call_gex_3m) / total_abs_gex_3m * 100) if total_abs_gex_3m > 0 else 50.0
     
+    # --- 3D CALCULATION ENGINE ---
     call_df_3d = df_3d[df_3d['type'] == 'C']
     put_df_3d = df_3d[df_3d['type'] == 'P']
+    
+    call_gex_3d = call_df_3d['gex'].sum()
+    put_gex_3d = put_df_3d['gex'].sum()
+    net_gex_3d = call_gex_3d + put_gex_3d
+    
+    total_abs_gex_3d = abs(call_gex_3d) + abs(put_gex_3d)
+    call_weight_pct_3d = (abs(call_gex_3d) / total_abs_gex_3d * 100) if total_abs_gex_3d > 0 else 50.0
     
     strikes_3d = sorted(df_3d['strike'].unique())
     min_pain = float('inf')
@@ -176,7 +184,7 @@ def fetch_deribit_gex(currency="BTC"):
                 "call_flow": round(net_call_fiat_flow, 2),
                 "put_flow": round(net_put_fiat_flow, 2)
             }
-            redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
+            redis.rpush(REDIS_FLOW_KEY, json.dumps(snapshot))
 
         all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
         valid_flow_records = []
@@ -237,12 +245,12 @@ def fetch_deribit_gex(currency="BTC"):
         chart_matrix.append({"index": idx, "strike": b_strike, "gex": gex_val, "abs_gex": abs_gex_val})
 
     return {
-        "spot": spot_price, "call_gex": call_gex, "put_gex": put_gex, "net_gex": net_gex,
-        "net_gex_3m": net_gex_3m,
-        "call_weight": call_weight_pct, "max_pain": max_pain_level, "flip": flip_level,
-        "breakout": breakout_price, "resistance": resistance_level, "support": support_level,
-        "call_inflow": total_accumulated_call_flow, "put_inflow": total_accumulated_put_flow,
-        "net_flow": net_flow_bias, "cp_ratio": cp_ratio, "chart_data": chart_matrix
+        "spot": spot_price, 
+        "call_gex_3m": call_gex_3m, "put_gex_3m": put_gex_3m, "net_gex_3m": net_gex_3m, "call_weight_3m": call_weight_pct_3m,
+        "call_gex_3d": call_gex_3d, "put_gex_3d": put_gex_3d, "net_gex_3d": net_gex_3d, "call_weight_3d": call_weight_pct_3d,
+        "max_pain": max_pain_level, "flip": flip_level, "breakout": breakout_price, 
+        "resistance": resistance_level, "support": support_level, "call_inflow": total_accumulated_call_flow, 
+        "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "cp_ratio": cp_ratio, "chart_data": chart_matrix
     }
 
 def fmt_gex(val):
@@ -267,10 +275,19 @@ def main(page: ft.Page):
     history_bottom_axis = ft.ChartAxis(labels=[], labels_size=0)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
-    call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
-    put_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.RED_400)
-    net_gex_txt = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
-    weight_txt = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_300)
+    
+    # 3M UI Elements
+    call_gex_txt_3m = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
+    put_gex_txt_3m = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.RED_400)
+    net_gex_txt_3m = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
+    weight_txt_3m = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_300)
+
+    # 3D UI Elements (With Requested Color Replacements)
+    call_gex_txt_3d = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.ORANGE_400)     # Green -> Orange/Gold
+    put_gex_txt_3d = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.INDIGO_400)     # Red -> Navy Blue
+    net_gex_txt_3d = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
+    weight_txt_3d = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_800)       # Blue -> Dark Violet
+    
     pain_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600)
     flip_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.ORANGE_400)
     breakout_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_ACCENT)
@@ -280,7 +297,6 @@ def main(page: ft.Page):
     inflows_call_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
     outflows_put_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
     net_flow_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
-    cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
 
     gex_bar_chart = ft.BarChart(bar_groups=[], bottom_axis=net_axis, 
                                 horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
@@ -294,7 +310,6 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # FIXED: Re-instated clean canvas definition directly matching your pristine working build configuration
     history_line_chart = ft.LineChart(
         data_series=[
             ft.LineChartData(
@@ -326,11 +341,21 @@ def main(page: ft.Page):
         m = fetch_deribit_gex("BTC")
         if m:
             spot_txt.value = f"${m['spot']:,.2f}"
-            call_gex_txt.value = fmt_gex(m['call_gex'])
-            put_gex_txt.value = fmt_gex(m['put_gex'])
-            net_gex_txt.value = fmt_gex(m['net_gex'])
-            net_gex_txt.color = ft.colors.GREEN_400 if m['net_gex'] >= 0 else ft.colors.RED_400
-            weight_txt.value = f"{m['call_weight']:.1f}%"
+            
+            # Populate 3M Metrics
+            call_gex_txt_3m.value = fmt_gex(m['call_gex_3m'])
+            put_gex_txt_3m.value = fmt_gex(m['put_gex_3m'])
+            net_gex_txt_3m.value = fmt_gex(m['net_gex_3m'])
+            net_gex_txt_3m.color = ft.colors.GREEN_400 if m['net_gex_3m'] >= 0 else ft.colors.RED_400
+            weight_txt_3m.value = f"{m['call_weight_3m']:.1f}%"
+
+            # Populate 3D Metrics
+            call_gex_txt_3d.value = fmt_gex(m['call_gex_3d'])
+            put_gex_txt_3d.value = fmt_gex(m['put_gex_3d'])
+            net_gex_txt_3d.value = fmt_gex(m['net_gex_3d'])
+            net_gex_txt_3d.color = ft.colors.ORANGE_400 if m['net_gex_3d'] >= 0 else ft.colors.INDIGO_400
+            weight_txt_3d.value = f"{m['call_weight_3d']:.1f}%"
+            
             pain_txt.value = f"${m['max_pain']:,.0f}"
             flip_txt.value = f"${m['flip']:,.0f}"
             breakout_txt.value = f"${m['breakout']:,.0f}"
@@ -345,8 +370,6 @@ def main(page: ft.Page):
             
             net_flow_txt.value = fmt_unsigned_fiat_flow(m['net_flow'])
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
-            
-            cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
             # --- REDIS LOGGING ENGINE ---
             time_now = datetime.now(timezone.utc)
@@ -393,7 +416,6 @@ def main(page: ft.Page):
                         try:
                             data = json.loads(record)
                             
-                            # Fallback logic handles string or float payloads cleanly
                             if "timestamp" in data:
                                 ts_str = data['timestamp']
                             elif "epoch" in data:
@@ -442,7 +464,6 @@ def main(page: ft.Page):
                         )
                         current_step += 50.0
                     
-                    # FIXED: Apply structural labels dynamically here AFTER arrays have processed cleanly
                     history_left_axis.labels = y_labels
                     history_line_chart.left_axis = history_left_axis
                     history_line_chart.bottom_axis = history_bottom_axis
@@ -485,14 +506,29 @@ def main(page: ft.Page):
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
-        
-        
         create_section_header("NET GAMMA PROFILES BY STRIKE"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart)),
         create_section_header("ABSOLUTE GAMMA EXPOSURE"),
         ft.Card(content=ft.Container(padding=15, content=abs_gex_chart)),
-        create_section_header("TOTAL GAMMA EXPOSURE"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Call Gamma", call_gex_txt), ui_row_item("Put Gamma", put_gex_txt), ui_row_item("Net Gamma", net_gex_txt), ui_row_item("Call Weight (%)", weight_txt)]))),
+        
+        # Original Total Gamma Exposure Card (Renamed to 3M)
+        create_section_header("TOTAL GAMMA EXPOSURE (3M)"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([
+            ui_row_item("Call Gamma", call_gex_txt_3m), 
+            ui_row_item("Put Gamma", put_gex_txt_3m), 
+            ui_row_item("Net Gamma", net_gex_txt_3m), 
+            ui_row_item("Call Weight (%)", weight_txt_3m)
+        ]))),
+        
+        # NEW REQUESTED TOTAL GAMMA EXPOSURE CARD (3D with color updates)
+        create_section_header("TOTAL GAMMA EXPOSURE (3D)"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([
+            ui_row_item("Call Gamma", call_gex_txt_3d), 
+            ui_row_item("Put Gamma", put_gex_txt_3d), 
+            ui_row_item("Net Gamma", net_gex_txt_3d), 
+            ui_row_item("Call Weight (%)", weight_txt_3d)
+        ]))),
+        
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
