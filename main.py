@@ -133,7 +133,7 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # --- live option tape directional processing ---
+    # --- LIVE OPTION TAPE DIRECTIONAL PARSER ---
     net_call_fiat_flow = 0.0
     net_put_fiat_flow = 0.0
     try:
@@ -161,7 +161,7 @@ def fetch_deribit_gex(currency="BTC"):
     time_now = datetime.now(timezone.utc)
     current_ts = time_now.strftime("%m-%d %H:%M")
 
-    # --- time-based historical logs life-cycle engine ---
+    # --- TIME-BASED HISTORICAL LOG CLEAN-UP ENGINE ---
     try:
         last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
         is_duplicate = False
@@ -227,7 +227,6 @@ def fetch_deribit_gex(currency="BTC"):
     df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     df_chart_range['abs_gex_contribution'] = df_chart_range['gex'].abs()
     
-    # Isolated from the rolling tracking timeline thread variables to prevent absolute mutations
     bucket_summary_matrix = df_chart_range.groupby('strike_bucket').agg({'gex': 'sum', 'abs_gex_contribution': 'sum'})
     
     target_buckets = list(range(int(lower_bound), int(upper_bound) + 1000, 1000))
@@ -296,7 +295,6 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # RESTORED LOOPHOLE FIX: Instantiated with clean canvas parameters to bypass canvas grid conflicts
     history_line_chart = ft.LineChart(
         data_series=[
             ft.LineChartData(
@@ -348,7 +346,7 @@ def main(page: ft.Page):
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            # --- REDIS LOGGING ENGINE (WITH TIME DUP GUARD) ---
+            # --- REDIS LOGGING ENGINE ---
             time_now = datetime.now(timezone.utc)
             current_refresh_ts = time_now.strftime("%m-%d %H:%M")
             try:
@@ -393,18 +391,17 @@ def main(page: ft.Page):
                         try:
                             data = json.loads(record)
                             
-                            # Safe fallback extracts strings or floats fluidly
-                            if "timestamp" in data:
+                            # FIXED LOOPHOLE: Direct epoch conversion prevents string manipulation failures
+                            if "epoch" in data:
+                                rec_time = datetime.fromtimestamp(data['epoch'], tz=timezone.utc)
+                            elif "timestamp" in data:
                                 ts_str = data['timestamp']
-                            elif "epoch" in data:
-                                ts_str = datetime.fromtimestamp(data['epoch'], tz=timezone.utc).strftime("%m-%d %H:%M")
+                                if "-" in ts_str:
+                                    rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                                else:
+                                    rec_time = datetime.strptime(f"{time_now.year}-{time_now.month}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
                             else:
                                 continue
-                                
-                            if "-" in ts_str:
-                                rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                            else:
-                                rec_time = datetime.strptime(f"{time_now.year}-{time_now.month}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
                                 
                             if rec_time > time_now:
                                 rec_time = rec_time.replace(year=time_now.year - 1)
@@ -442,7 +439,6 @@ def main(page: ft.Page):
                         )
                         current_step += 50.0
                     
-                    # FIXED RENDERING SEQUENCE: Inject configuration bounds into canvas window dynamically 
                     history_left_axis.labels = y_labels
                     history_line_chart.min_x = 0
                     history_line_chart.max_x = 21
