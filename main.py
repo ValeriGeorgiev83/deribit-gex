@@ -133,7 +133,7 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # --- LIVE OPTION TAPE DIRECTIONAL PARSER ---
+    # --- LIVE OPTION TAPE LOGIC ---
     net_call_fiat_flow = 0.0
     net_put_fiat_flow = 0.0
     try:
@@ -156,7 +156,7 @@ def fetch_deribit_gex(currency="BTC"):
                 if direction == 'buy': net_put_fiat_flow -= fiat_notional_value
                 else: net_put_fiat_flow += fiat_notional_value
     except Exception as ex:
-        print(f"Option Trade Fetch Interrupted: {ex}")
+        print(f"Option Tape Fetch Interrupted: {ex}")
 
     time_now = datetime.now(timezone.utc)
     current_ts = time_now.strftime("%m-%d %H:%M")
@@ -295,6 +295,7 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
+    # RESTORED LOOPHOLE FIXED: Bound settings explicitly declared at instantiation to ensure grid rendering
     history_line_chart = ft.LineChart(
         data_series=[
             ft.LineChartData(
@@ -304,6 +305,12 @@ def main(page: ft.Page):
                 curved=True,
             )
         ],
+        min_x=0,
+        max_x=21,
+        min_y=-50000000.0,
+        max_y=50000000.0,
+        left_axis=history_left_axis,
+        bottom_axis=history_bottom_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=220
@@ -346,7 +353,7 @@ def main(page: ft.Page):
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            # --- REDIS LOGGING ENGINE ---
+            # --- REDIS LOGGING ENGINE (WITH TIME DUP GUARD) ---
             time_now = datetime.now(timezone.utc)
             current_refresh_ts = time_now.strftime("%m-%d %H:%M")
             try:
@@ -391,7 +398,7 @@ def main(page: ft.Page):
                         try:
                             data = json.loads(record)
                             
-                            # FIXED LOOPHOLE: Direct epoch conversion prevents string manipulation failures
+                            # Safe fallback handles string or float payloads cleanly
                             if "epoch" in data:
                                 rec_time = datetime.fromtimestamp(data['epoch'], tz=timezone.utc)
                             elif "timestamp" in data:
@@ -440,10 +447,6 @@ def main(page: ft.Page):
                         current_step += 50.0
                     
                     history_left_axis.labels = y_labels
-                    history_line_chart.min_x = 0
-                    history_line_chart.max_x = 21
-                    history_line_chart.left_axis = history_left_axis
-                    history_line_chart.bottom_axis = history_bottom_axis
 
                     line_points = []
                     for data in filtered_records:
