@@ -133,7 +133,7 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # --- METHOD B: FIXED TAPE DIRECTIONAL ENGINE ---
+    # --- METHOD B: OPTION TAPE DIRECTIONAL ENGINE ($ VALUED) ---
     net_call_fiat_flow = 0.0
     net_put_fiat_flow = 0.0
     try:
@@ -151,7 +151,7 @@ def fetch_deribit_gex(currency="BTC"):
             
             if ins_name.endswith('-C'):
                 if direction == 'buy': net_call_fiat_flow += fiat_notional_value
-                else: net_call_fiat_flow -= fiat_notional_value  # FIXED: Variable typo resolved
+                else: net_call_fiat_flow -= fiat_notional_value  
             elif ins_name.endswith('-P'):
                 if direction == 'buy': net_put_fiat_flow -= fiat_notional_value
                 else: net_put_fiat_flow += fiat_notional_value
@@ -304,16 +304,16 @@ def main(page: ft.Page):
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
         min_x=0,
-        max_x=24, # Standardized canvas footprint to capture 24 indexed increments
+        max_x=21, 
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=220
     )
 
-    # Padding Left calibrated to 51px and Right to 12px for timeline mapping
+    # Padding Left calibrated to 51px and Right to 11px to match canvas margins
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(left=51, right=12)
+        padding=ft.padding.only(left=51, right=11)
     )
 
     def create_section_header(title):
@@ -348,7 +348,7 @@ def main(page: ft.Page):
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            # --- REDIS LOGGING ENGINE (WITH TIMESTAMPS) ---
+            # --- REDIS LOGGING ENGINE ---
             time_now = datetime.now(timezone.utc)
             current_refresh_epoch = time_now.timestamp()
             try:
@@ -368,11 +368,13 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- GENERATE STEP LABELS ACROSS 24 HOURS (9 MARKERS) ---
+            # --- GENERATE STEP LABELS ACROSS 21 HOURS ---
             current_utc_hour = time_now.hour
             row_elements = []
-            for step in range(0, 25, 3): 
-                calculated_hour = (current_utc_hour - 24 + step) % 24
+            start_hour = (current_utc_hour - 21) % 24  
+            
+            for step in range(0, 22, 3): 
+                calculated_hour = (start_hour + step) % 24
                 row_elements.append(
                     ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
                 )
@@ -399,10 +401,8 @@ def main(page: ft.Page):
                                 rec_epoch = rec_time.timestamp()
 
                             hours_diff = (current_refresh_epoch - rec_epoch) / 3600.0
-                            if hours_diff <= 24.0: 
+                            if hours_diff <= 21.0: 
                                 data['epoch_computed'] = rec_epoch
-                                # Extract absolute hour value from point's history timestamp
-                                data['hour_bucket'] = datetime.fromtimestamp(rec_epoch, tz=timezone.utc).hour
                                 filtered_records.append(data)
                         except Exception:
                             continue
@@ -433,19 +433,18 @@ def main(page: ft.Page):
                         current_step += 50.0
                     history_left_axis.labels = y_labels
 
-                    # --- FIXED HISTORICAL CHRONOLOGICAL GRID MAPPING ---
+                    # --- CHRONOLOGICAL ABSOLUTE GRID MAPPER ---
                     line_points = []
                     for data in filtered_records:
-                        target_hour = data['hour_bucket']
+                        rec_dt = datetime.fromtimestamp(data['epoch_computed'], tz=timezone.utc)
+                        rec_hour = rec_dt.hour
+                        rec_minute = rec_dt.minute
                         
-                        # Reconstruct layout grid coordinate position relative to current day context window
-                        if target_hour <= current_utc_hour:
-                            x_pos = 24.0 - (current_utc_hour - target_hour)
-                        else:
-                            x_pos = (target_hour - current_utc_hour - 24) * -1
-                            x_pos = 24.0 - x_pos
-                            
-                        x_pos = max(0.0, min(24.0, x_pos))
+                        # FIXED: Normalized placement math checks hour offsets against absolute layout scale
+                        hour_offset = (rec_hour - start_hour) % 24
+                        x_pos = hour_offset + (rec_minute / 60.0)
+                        
+                        x_pos = max(0.0, min(21.0, x_pos))
                         line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
                     
                     history_line_chart.data_series[0].data_points = line_points
