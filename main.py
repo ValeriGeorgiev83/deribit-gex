@@ -297,17 +297,17 @@ def main(page: ft.Page):
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     
-    call_gex_txt_3m = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
-    put_gex_txt_3m = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.RED_400)
+    # --- ACTIVE TEXT CONTROLS STRUCTURAL BASES ---
+    call_gex_txt_3m = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
+    put_gex_txt_3m = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     net_gex_txt_3m = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
     weight_txt_3m = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_300)
 
-    call_gex_txt_3d = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.ORANGE_400)
-    put_gex_txt_3d = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.INDIGO_400)
+    call_gex_txt_3d = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
+    put_gex_txt_3d = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
     net_gex_txt_3d = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
     weight_txt_3d = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_800)
     
-    # MODIFIED: Reduced initial text block size to 14 and updated placeholder to match
     skew_25d_txt = ft.Text("0.00% (Neutral)", size=14, weight=ft.FontWeight.BOLD)
     
     pain_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600)
@@ -358,19 +358,52 @@ def main(page: ft.Page):
         if m:
             spot_txt.value = f"${m['spot']:,.2f}"
             
-            call_gex_txt_3m.value = fmt_gex(m['call_gex_3m'])
-            put_gex_txt_3m.value = fmt_gex(m['put_gex_3m'])
+            # --- UPDATED: 3M DYNAMIC COLOR & LABEL REGIME ENGINE ---
+            c_3m, p_3m = m['call_gex_3m'], m['put_gex_3m']
+            
+            # Call Gamma 3M: Positive -> Red (Bearish) | Negative -> Green (Bullish)
+            if c_3m >= 0:
+                call_gex_txt_3m.value = f"{fmt_gex(c_3m)} (Bearish)"
+                call_gex_txt_3m.color = ft.colors.RED_400
+            else:
+                call_gex_txt_3m.value = f"{fmt_gex(c_3m)} (Bullish)"
+                call_gex_txt_3m.color = ft.colors.GREEN_400
+                
+            # Put Gamma 3M: Positive -> Green (Bullish) | Negative -> Red (Bearish)
+            if p_3m >= 0:
+                put_gex_txt_3m.value = f"{fmt_gex(p_3m)} (Bullish)"
+                put_gex_txt_3m.color = ft.colors.GREEN_400
+            else:
+                put_gex_txt_3m.value = f"{fmt_gex(p_3m)} (Bearish)"
+                put_gex_txt_3m.color = ft.colors.RED_400
+                
             net_gex_txt_3m.value = fmt_gex(m['net_gex_3m'])
             net_gex_txt_3m.color = ft.colors.GREEN_400 if m['net_gex_3m'] >= 0 else ft.colors.RED_400
             weight_txt_3m.value = f"{m['call_weight_3m']:.1f}%"
 
-            call_gex_txt_3d.value = fmt_gex(m['call_gex_3d'])
-            put_gex_txt_3d.value = fmt_gex(m['put_gex_3d'])
+            # --- UPDATED: 3D DYNAMIC COLOR & LABEL REGIME ENGINE ---
+            c_3d, p_3d = m['call_gex_3d'], m['put_gex_3d']
+            
+            # Call Gamma 3D: Positive -> Blue (Bearish) | Negative -> Orange/Gold (Bullish)
+            if c_3d >= 0:
+                call_gex_txt_3d.value = f"{fmt_gex(c_3d)} (Bearish)"
+                call_gex_txt_3d.color = ft.colors.BLUE_400
+            else:
+                call_gex_txt_3d.value = f"{fmt_gex(c_3d)} (Bullish)"
+                call_gex_txt_3d.color = ft.colors.ORANGE_400
+                
+            # Put Gamma 3D: Positive -> Blue (Bearish) | Negative -> Orange/Gold (Bullish)
+            if p_3d >= 0:
+                put_gex_txt_3d.value = f"{fmt_gex(p_3d)} (Bearish)"
+                put_gex_txt_3d.color = ft.colors.BLUE_400
+            else:
+                put_gex_txt_3d.value = f"{fmt_gex(p_3d)} (Bullish)"
+                put_gex_txt_3d.color = ft.colors.ORANGE_400
+
             net_gex_txt_3d.value = fmt_gex(m['net_gex_3d'])
             net_gex_txt_3d.color = ft.colors.ORANGE_400 if m['net_gex_3d'] >= 0 else ft.colors.INDIGO_400
             weight_txt_3d.value = f"{m['call_weight_3d']:.1f}%"
             
-            # --- MODIFIED: REMOVED "REGIME" AND MATCHED SIZES CLEANLY ---
             skew_val = m['skew_25d']
             if skew_val <= 0.4 and skew_val >= -0.4:
                 skew_25d_txt.value = f"{skew_val:+.2f}% (Neutral)"
