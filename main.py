@@ -71,7 +71,7 @@ def fetch_deribit_gex(currency="BTC"):
             'oi': oi, 
             'volume': volume, 
             'gex': gex_value,
-            'iv': iv * 100.0, # Kept as percentage integer for chart display mapping
+            'iv': iv * 100.0, 
             'days_to_expiry': days_to_expiry
         })
         
@@ -103,14 +103,11 @@ def fetch_deribit_gex(currency="BTC"):
     # --- 7D EXPIRATION ENGINE FOR IV SKEW ---
     df_7d = base_df[base_df['days_to_expiry'] <= 7.0]
     
-    # Calculate 25-Delta Skew dynamically
     skew_25d_val = 0.0
     if not df_7d.empty:
-        # Theoretical 25D location approximation using distance metric framework
         calls_7d = df_7d[df_7d['type'] == 'C']
         puts_7d = df_7d[df_7d['type'] == 'P']
         
-        # Locate Call and Put closest to 25-Delta positioning maps
         c_25d = calls_7d.loc[(calls_7d['strike'] - spot_price * 1.05).abs().idxmin()] if not calls_7d.empty else None
         p_25d = puts_7d.loc[(puts_7d['strike'] - spot_price * 0.95).abs().idxmin()] if not puts_7d.empty else None
         
@@ -310,7 +307,6 @@ def main(page: ft.Page):
     net_gex_txt_3d = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
     weight_txt_3d = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_800)
     
-    # 25D Skew Dynamic Row Indicator Control
     skew_25d_txt = ft.Text("0.00%", size=18, weight=ft.FontWeight.BOLD)
     
     pain_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600)
@@ -342,21 +338,36 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # --- NEW REQUESTED IV SKEW CURVE LINE CHART INSTANTIATION ---
-    iv_skew_line_chart = ft.LineChart(
-        data_series=[
-            ft.LineChartData(
-                data_points=[],
-                color=ft.colors.ORANGE_700, # Dark Orange
-                stroke_width=3,
-                curved=True,
-            )
-        ],
-        bottom_axis=iv_bottom_axis,
+    # FIXED: Swapped LineChart constructor out for a dedicated BarChart layout panel
+    iv_skew_bar_chart = ft.BarChart(
+        bar_groups=[], bottom_axis=iv_bottom_axis,
         left_axis=iv_left_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         animate=True, interactive=True, height=240
+    )
+
+    history_line_chart = ft.LineChart(
+        data_series=[
+            ft.LineChartData(
+                data_points=[],
+                color=ft.colors.ORANGE_400,
+                stroke_width=2.5,
+                curved=True,
+            )
+        ],
+        left_axis=history_left_axis,
+        bottom_axis=history_bottom_axis,
+        min_x=0,
+        max_x=21,
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
+        animate=True, interactive=True, height=220
+    )
+
+    native_timeline_container = ft.Container(
+        content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        padding=ft.padding.only(left=51, right=11)
     )
 
     def create_section_header(title):
@@ -382,7 +393,6 @@ def main(page: ft.Page):
             net_gex_txt_3d.color = ft.colors.ORANGE_400 if m['net_gex_3d'] >= 0 else ft.colors.INDIGO_400
             weight_txt_3d.value = f"{m['call_weight_3d']:.1f}%"
             
-            # Update 25D Skew with Requested Color Mapping Criteria
             skew_25d_txt.value = f"{m['skew_25d']:+.2f}%"
             if m['skew_25d'] > 0: skew_25d_txt.color = ft.colors.GREEN_400
             elif m['skew_25d'] < 0: skew_25d_txt.color = ft.colors.RED_400
@@ -420,25 +430,21 @@ def main(page: ft.Page):
             except Exception as ex: print(f"Cloud Logging Interrupted: {ex}")
             
             # --- BAR CHARTS & IV SKEW RENDERING LOOPS ---
-            new_groups, abs_groups, breakdown_groups, iv_points, new_labels, min_dist, spot_index = [], [], [], [], [], float('inf'), -1
+            new_groups, abs_groups, breakdown_groups, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist: min_dist, spot_index = dist, item['index']
             
-            # Gather non-zero IV levels to scale Y axis cleanly
             valid_ivs = [item['iv_skew'] for item in m['chart_data'] if item['iv_skew'] > 0]
             max_iv = max(valid_ivs, default=100.0)
             min_iv = min(valid_ivs, default=0.0)
             
-            # Align Y-axis grid matrix constraints to 10% divisions
             floor_y = math.floor(min_iv / 10.0) * 10.0
             ceil_y = math.ceil(max_iv / 10.0) * 10.0
             if ceil_y == floor_y: ceil_y += 10.0
             
-            iv_skew_line_chart.min_y = floor_y
-            iv_skew_line_chart.max_y = ceil_y
-            iv_skew_line_chart.min_x = 0
-            iv_skew_line_chart.max_x = len(m['chart_data']) - 1
+            iv_skew_bar_chart.min_y = floor_y
+            iv_skew_bar_chart.max_y = ceil_y
 
             y_iv_labels = []
             curr_y = floor_y
@@ -462,9 +468,13 @@ def main(page: ft.Page):
                     ]
                 ))
                 
-                # Append coordinates onto the dynamic IV Skew curve data series
-                if iv_val > 0:
-                    iv_points.append(ft.LineChartDataPoint(x=item['index'], y=iv_val))
+                # FIXED: Formulated dark orange BarChartGroup blocks for each index slot coordinate
+                iv_bar_groups.append(ft.BarChartGroup(
+                    x=item['index'],
+                    bar_rods=[
+                        ft.BarChartRod(from_y=floor_y, to_y=iv_val if iv_val > 0 else floor_y, color=ft.colors.ORANGE_700, width=12, border_radius=2)
+                    ]
+                ))
                 
                 if strike_val % 2000 == 0:
                     label_color = ft.colors.BLUE_200 if is_spot else ft.colors.GREY_400
@@ -476,11 +486,12 @@ def main(page: ft.Page):
             abs_gex_chart.bar_groups = abs_groups
             abs_axis.labels = new_labels
             
-            drop_axis_labels = list(new_labels) # safe duplicate axis mapping profile references cleanly
+            drop_axis_labels = list(new_labels)
             breakdown_gex_chart.bar_groups = breakdown_groups
             breakdown_axis.labels = drop_axis_labels
             
-            iv_skew_line_chart.data_series[0].data_points = iv_points
+            # Update the custom bar group arrays and bottom axis labels matrix dynamically
+            iv_skew_bar_chart.bar_groups = iv_bar_groups
             iv_bottom_axis.labels = list(new_labels)
             
             page.update()
@@ -506,10 +517,10 @@ def main(page: ft.Page):
             ui_row_item("Call Gamma", call_gex_txt_3d), ui_row_item("Put Gamma", put_gex_txt_3d), ui_row_item("Net Gamma", net_gex_txt_3d), ui_row_item("Call Weight (%)", weight_txt_3d)
         ]))),
         
-        # --- NEW REQUESTED IV SKEW ANALYSIS (7D) CARD SECTION ---
+        # --- IV SKEW ANALYSIS (7D) CARD SECTION (WITH DYNAMIC BAR GRAPH ENGINE) ---
         create_section_header("IV SKEW ANALYSIS (7D)"),
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
-            iv_skew_line_chart,
+            iv_skew_bar_chart,
             ft.Container(height=10),
             ui_row_item("Current 25D strike Skew", skew_25d_txt)
         ]))),
