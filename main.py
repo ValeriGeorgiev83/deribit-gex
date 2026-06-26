@@ -133,7 +133,7 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # --- METHOD B: OPTION TAPE DIRECTIONAL ENGINE ($ VALUED) ---
+    # --- METHOD B: FIXED TAPE DIRECTIONAL ENGINE ---
     net_call_fiat_flow = 0.0
     net_put_fiat_flow = 0.0
     try:
@@ -151,7 +151,7 @@ def fetch_deribit_gex(currency="BTC"):
             
             if ins_name.endswith('-C'):
                 if direction == 'buy': net_call_fiat_flow += fiat_notional_value
-                else: net_call_fiat_flow -= net_fiat_notional_value
+                else: net_call_fiat_flow -= fiat_notional_value  # FIXED: Variable typo resolved
             elif ins_name.endswith('-P'):
                 if direction == 'buy': net_put_fiat_flow -= fiat_notional_value
                 else: net_put_fiat_flow += fiat_notional_value
@@ -304,16 +304,16 @@ def main(page: ft.Page):
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
         min_x=0,
-        max_x=21, 
+        max_x=24, # Standardized canvas footprint to capture 24 indexed increments
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=220
     )
 
-    # REVISED: Calibrated layout container width to line up exactly with grid lines
+    # Padding Left calibrated to 51px and Right to 12px for timeline mapping
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(left=51, right=11)
+        padding=ft.padding.only(left=51, right=12)
     )
 
     def create_section_header(title):
@@ -348,7 +348,7 @@ def main(page: ft.Page):
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            # --- REDIS LOGGING ENGINE ---
+            # --- REDIS LOGGING ENGINE (WITH TIMESTAMPS) ---
             time_now = datetime.now(timezone.utc)
             current_refresh_epoch = time_now.timestamp()
             try:
@@ -368,11 +368,11 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
 
-            # --- GENERATE STEP LABELS ACROSS 21 HOURS ---
+            # --- GENERATE STEP LABELS ACROSS 24 HOURS (9 MARKERS) ---
             current_utc_hour = time_now.hour
             row_elements = []
-            for step in range(0, 22, 3): 
-                calculated_hour = (current_utc_hour - 21 + step) % 24
+            for step in range(0, 25, 3): 
+                calculated_hour = (current_utc_hour - 24 + step) % 24
                 row_elements.append(
                     ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
                 )
@@ -398,11 +398,11 @@ def main(page: ft.Page):
                                 if rec_time > time_now: rec_time = rec_time.replace(year=time_now.year - 1)
                                 rec_epoch = rec_time.timestamp()
 
-                            # FIXED rollover math: compute time difference dynamically using absolute float epochs
                             hours_diff = (current_refresh_epoch - rec_epoch) / 3600.0
-                            if hours_diff <= 21.0: 
+                            if hours_diff <= 24.0: 
                                 data['epoch_computed'] = rec_epoch
-                                data['hours_ago'] = hours_diff
+                                # Extract absolute hour value from point's history timestamp
+                                data['hour_bucket'] = datetime.fromtimestamp(rec_epoch, tz=timezone.utc).hour
                                 filtered_records.append(data)
                         except Exception:
                             continue
@@ -433,11 +433,19 @@ def main(page: ft.Page):
                         current_step += 50.0
                     history_left_axis.labels = y_labels
 
+                    # --- FIXED HISTORICAL CHRONOLOGICAL GRID MAPPING ---
                     line_points = []
                     for data in filtered_records:
-                        # Map points cleanly into the line canvas frame
-                        x_pos = 21.0 - data['hours_ago']
-                        x_pos = max(0.0, min(21.0, x_pos))
+                        target_hour = data['hour_bucket']
+                        
+                        # Reconstruct layout grid coordinate position relative to current day context window
+                        if target_hour <= current_utc_hour:
+                            x_pos = 24.0 - (current_utc_hour - target_hour)
+                        else:
+                            x_pos = (target_hour - current_utc_hour - 24) * -1
+                            x_pos = 24.0 - x_pos
+                            
+                        x_pos = max(0.0, min(24.0, x_pos))
                         line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
                     
                     history_line_chart.data_series[0].data_points = line_points
@@ -498,7 +506,6 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
-        # FIXED: Labels updated to matching explicit casing configurations
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
     )
     refresh_dashboard()
