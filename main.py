@@ -177,27 +177,7 @@ def fetch_deribit_gex(currency="BTC"):
     time_now = datetime.now(timezone.utc)
     current_ts = time_now.strftime("%m-%d %H:%M")
 
-    # --- TIME-BASED HISTORICAL LOG CLEAN-UP ENGINE (LOGS 3D EXPIRY NET GEX) ---
-    try:
-        last_gex_element = redis.lindex(REDIS_KEY, -1)
-        is_gex_dup = False
-        if last_gex_element:
-            try:
-                logged_data = json.loads(last_gex_element)
-                logged_ts = logged_data.get("timestamp") or datetime.fromtimestamp(logged_data.get("epoch"), tz=timezone.utc).strftime("%m-%d %H:%M")
-                if logged_ts == current_ts: is_gex_dup = True
-            except Exception: pass
-
-        if not is_gex_dup:
-            snapshot = {
-                "timestamp": current_ts,
-                "gex": round(net_gex_3d, 2)  
-            }
-            redis.rpush(REDIS_KEY, json.dumps(snapshot))
-            redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
-    except Exception as ex:
-        print(f"Cloud Logging Interrupted: {ex}")
-
+    # --- TIME-BASED HISTORICAL LOG CLEAN-UP ENGINE ---
     try:
         last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
         is_duplicate = False
@@ -262,6 +242,7 @@ def fetch_deribit_gex(currency="BTC"):
         'gex': 'sum', 'abs_gex_contribution': 'sum', 'bullish_gex': 'sum', 'bearish_gex': 'sum'
     })
     
+    # --- IV SKEW OVERVIEW CALCULATION ARRAY (7D EXPIRY) ---
     df_7d_range = df_7d[(df_7d['strike'] >= lower_bound) & (df_7d['strike'] <= upper_bound)].copy() if not df_7d.empty else pd.DataFrame()
     bucket_iv_map = {}
     if not df_7d_range.empty:
@@ -313,9 +294,6 @@ def main(page: ft.Page):
     breakdown_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_left_axis = ft.ChartAxis(labels=[], labels_size=42)
-    
-    history_change_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
-    history_change_left_axis = ft.ChartAxis(labels=[], labels_size=42)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     
@@ -368,14 +346,6 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    history_change_bar_chart = ft.BarChart(
-        bar_groups=[], bottom_axis=history_change_bottom_axis,
-        left_axis=history_change_left_axis,
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        animate=True, interactive=True, height=240
-    )
-
     def create_section_header(title):
         return ft.Container(content=ft.Text(title, size=13, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_500), margin=ft.margin.only(top=15, bottom=5))
 
@@ -417,81 +387,25 @@ def main(page: ft.Page):
             net_flow_txt.value = fmt_unsigned_fiat_flow(m['net_flow'])
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             
-            # --- POPULATE ROLLING HISTORICAL TREND ---
+            # --- REDIS LOGGING ENGINE ---
             time_now = datetime.now(timezone.utc)
+            current_refresh_ts = time_now.strftime("%m-%d %H:%M")
             try:
-                raw_records = redis.lrange(REDIS_KEY, 0, -1)
-                if raw_records:
-                    history_points_list = []
-                    for record in raw_records:
-                        try:
-                            data = json.loads(record)
-                            if "timestamp" in data:
-                                ts_str = data['timestamp']
-                            elif "epoch" in data:
-                                ts_str = datetime.fromtimestamp(data['epoch'], tz=timezone.utc).strftime("%m-%d %H:%M")
-                            else: continue
-                            
-                            if "-" in ts_str:
-                                rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                            else:
-                                rec_time = datetime.strptime(f"{time_now.year}-{time_now.month}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                            
-                            if rec_time > time_now: rec_time = rec_time.replace(year=time_now.year - 1)
-                            
-                            hours_diff = (time_now - rec_time).total_seconds() / 3600.0
-                            if hours_diff <= 24.0:
-                                data['hours_ago'] = hours_diff
-                                data['round_hour_str'] = rec_time.strftime("%H")
-                                history_points_list.append(data)
-                        except Exception: continue
-
-                    if history_points_list:
-                        df_hist = pd.DataFrame(history_points_list)
-                        
-                        sequence_hours_list = []
-                        for h in range(23, -1, -1):
-                            sequence_hours_list.append((time_now - timedelta(hours=h)).strftime("%H"))
-
-                        grouped_hist = df_hist.groupby('round_hour_str')['gex'].mean().to_dict()
-                        
-                        hist_bars = []
-                        hist_labels = []
-                        
-                        all_means_in_millions = [grouped_hist.get(h, 0.0) / 1000000.0 for h in sequence_hours_list]
-                        largest_hist_abs = max(max([abs(m) for m in all_means_in_millions], default=50.0), 50.0)
-                        fixed_hist_bound = math.ceil(largest_hist_abs / 50.0) * 50.0
-                        
-                        history_change_bar_chart.min_y = -fixed_hist_bound * 1000000.0
-                        history_change_bar_chart.max_y = fixed_hist_bound * 1000000.0
-                        
-                        y_hist_labels = []
-                        # FIXED: Loop limit and scale constraints variables map cleanly now
-                        curr_h_step = -fixed_hist_bound
-                        while curr_h_step <= fixed_hist_bound:
-                            h_sign = "+" if curr_h_step > 0 else ""
-                            lbl_text = f"{h_sign}{int(curr_h_step)}M" if curr_h_step != 0 else "0"
-                            y_hist_labels.append(ft.ChartAxisLabel(value=curr_h_step * 1000000.0, label=ft.Text(lbl_text, size=10, color=ft.colors.GREY_400)))
-                            curr_h_step += 50.0
-                        history_change_left_axis.labels = y_hist_labels
-
-                        for idx, h_str in enumerate(sequence_hours_list):
-                            avg_gex_val = grouped_hist.get(h_str, 0.0)
-                            
-                            hist_bars.append(ft.BarChartGroup(
-                                x=idx,
-                                bar_rods=[ft.BarChartRod(from_y=0, to_y=avg_gex_val, color=ft.colors.VIOLET, width=10, border_radius=2)]
-                            ))
-                            
-                            if idx % 3 == 0:
-                                hist_labels.append(ft.ChartAxisLabel(value=idx, label=ft.Text(h_str, size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)))
-                        
-                        history_change_bar_chart.bar_groups = hist_bars
-                        history_change_bottom_axis.labels = hist_labels
-            except Exception as ex:
-                print(f"Historical Bar Chart Processing Exception: {ex}")
-
-            # --- BAR CHARTS ENGINE ---
+                last_gex_element = redis.lindex(REDIS_KEY, -1)
+                is_gex_dup = False
+                if last_gex_element:
+                    try:
+                        logged_data = json.loads(last_gex_element)
+                        logged_ts = logged_data.get("timestamp") or datetime.fromtimestamp(logged_data.get("epoch"), tz=timezone.utc).strftime("%m-%d %H:%M")
+                        if logged_ts == current_refresh_ts: is_gex_dup = True
+                    except Exception: pass
+                if not is_gex_dup:
+                    snapshot = {"timestamp": current_refresh_ts, "gex": round(m['net_gex_3m'], 2)}
+                    redis.rpush(REDIS_KEY, json.dumps(snapshot))
+                    redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
+            except Exception as ex: print(f"Cloud Logging Interrupted: {ex}")
+            
+            # --- BAR CHARTS & IV SKEW RENDERING LOOPS ---
             new_groups, abs_groups, breakdown_groups, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
@@ -565,10 +479,6 @@ def main(page: ft.Page):
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart)),
         create_section_header("ABSOLUTE GAMMA EXPOSURE"),
         ft.Card(content=ft.Container(padding=15, content=abs_gex_chart)),
-        
-        create_section_header("NET GAMMA CHANGE (24H)"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=history_change_bar_chart)),
-        
         create_section_header("GAMMA EXPOSURE BREAKDOWN"),
         ft.Card(content=ft.Container(padding=15, content=breakdown_gex_chart)),
         
