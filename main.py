@@ -6,7 +6,7 @@ import pandas as pd
 import flet as ft
 from datetime import datetime, timezone, timedelta
 
-# Initialize Upstash Redis with the exact working credentials
+# Initialize Upstash Redis with exact working credentials configuration
 from upstash_redis import Redis
 redis = Redis(
     url="https://large-ghost-131173.upstash.io", 
@@ -312,6 +312,7 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=220
     )
 
+    # Padding Left calibrated to 51px and Right to 11px to match layout canvas metrics perfectly
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         padding=ft.padding.only(left=51, right=11)
@@ -394,7 +395,7 @@ def main(page: ft.Page):
                         try:
                             data = json.loads(record)
                             
-                            # Fallback logic handles both epoch types safely
+                            # Fixed Fallback parser logic to resolve string/float key exceptions dynamically
                             if "timestamp" in data:
                                 ts_str = data['timestamp']
                             elif "epoch" in data:
@@ -412,13 +413,14 @@ def main(page: ft.Page):
                                 
                             hours_diff = (time_now - rec_time).total_seconds() / 3600.0
                             if hours_diff <= 21.0:
-                                data['epoch'] = rec_time.timestamp()
+                                data['epoch_track'] = rec_time.timestamp()
                                 data['hours_ago'] = hours_diff
                                 filtered_records.append(data)
                         except Exception:
                             continue
 
-                    filtered_records.sort(key=lambda x: x['epoch'])
+                    # FIXED: Normalized sorted array criteria to point exactly to data['epoch_track']
+                    filtered_records.sort(key=lambda x: x['epoch_track'])
 
                     gex_in_millions = [data['gex'] / 1000000.0 for data in filtered_records]
                     max_m = max(gex_in_millions, default=50.0)
