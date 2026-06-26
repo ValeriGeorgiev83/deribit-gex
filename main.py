@@ -17,7 +17,7 @@ REDIS_FLOW_KEY = "deribit_flow_24h_history"
 MAX_HISTORY_POINTS = 3500
 
 def fetch_deribit_gex(currency="BTC"):
-    """Fetches and calculates GEX and market flow data from Deribit."""
+    """Fetches and calculates GEX, market flow, and IV Skew metrics from Deribit."""
     try:
         idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
         idx_res = requests.get(idx_url).json()
@@ -71,6 +71,7 @@ def fetch_deribit_gex(currency="BTC"):
             'oi': oi, 
             'volume': volume, 
             'gex': gex_value,
+            'iv': iv * 100.0, # Kept as percentage integer for chart display mapping
             'days_to_expiry': days_to_expiry
         })
         
@@ -84,25 +85,38 @@ def fetch_deribit_gex(currency="BTC"):
     # --- 3M CALCULATION ENGINE ---
     call_df_3m = df_3m[df_3m['type'] == 'C']
     put_df_3m = df_3m[df_3m['type'] == 'P']
-    
     call_gex_3m = call_df_3m['gex'].sum()
     put_gex_3m = put_df_3m['gex'].sum()
     net_gex_3m = call_gex_3m + put_gex_3m
-    
     total_abs_gex_3m = abs(call_gex_3m) + abs(put_gex_3m)
     call_weight_pct_3m = (abs(call_gex_3m) / total_abs_gex_3m * 100) if total_abs_gex_3m > 0 else 50.0
     
     # --- 3D CALCULATION ENGINE ---
     call_df_3d = df_3d[df_3d['type'] == 'C']
     put_df_3d = df_3d[df_3d['type'] == 'P']
-    
     call_gex_3d = call_df_3d['gex'].sum()
     put_gex_3d = put_df_3d['gex'].sum()
     net_gex_3d = call_gex_3d + put_gex_3d
-    
     total_abs_gex_3d = abs(call_gex_3d) + abs(put_gex_3d)
     call_weight_pct_3d = (abs(call_gex_3d) / total_abs_gex_3d * 100) if total_abs_gex_3d > 0 else 50.0
     
+    # --- 7D EXPIRATION ENGINE FOR IV SKEW ---
+    df_7d = base_df[base_df['days_to_expiry'] <= 7.0]
+    
+    # Calculate 25-Delta Skew dynamically
+    skew_25d_val = 0.0
+    if not df_7d.empty:
+        # Theoretical 25D location approximation using distance metric framework
+        calls_7d = df_7d[df_7d['type'] == 'C']
+        puts_7d = df_7d[df_7d['type'] == 'P']
+        
+        # Locate Call and Put closest to 25-Delta positioning maps
+        c_25d = calls_7d.loc[(calls_7d['strike'] - spot_price * 1.05).abs().idxmin()] if not calls_7d.empty else None
+        p_25d = puts_7d.loc[(puts_7d['strike'] - spot_price * 0.95).abs().idxmin()] if not puts_7d.empty else None
+        
+        if c_25d is not None and p_25d is not None:
+            skew_25d_val = p_25d['iv'] - c_25d['iv']
+
     strikes_3d = sorted(df_3d['strike'].unique())
     min_pain = float('inf')
     max_pain_level = spot_price
@@ -136,7 +150,6 @@ def fetch_deribit_gex(currency="BTC"):
 
     call_strike_gex_3d = call_df_3d.groupby('strike')['gex'].sum()
     put_strike_gex_3d = put_df_3d.groupby('strike')['gex'].sum().abs()
-    
     resistance_level = call_strike_gex_3d.idxmax() if not call_strike_gex_3d.empty else spot_price * 1.02
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
@@ -154,9 +167,7 @@ def fetch_deribit_gex(currency="BTC"):
             direction = trade.get('direction', 'buy')
             amount = float(trade.get('amount', 0))
             trade_index_price = float(trade.get('index_price', spot_price))
-            
             fiat_notional_value = amount * trade_index_price
-            
             if ins_name.endswith('-C'):
                 if direction == 'buy': net_call_fiat_flow += fiat_notional_value
                 else: net_call_fiat_flow -= fiat_notional_value
@@ -177,7 +188,6 @@ def fetch_deribit_gex(currency="BTC"):
             last_logged_data = json.loads(last_logged_element)
             if last_logged_data.get("timestamp") == current_ts:
                 is_duplicate = True
-
         if not is_duplicate:
             flow_snapshot = {
                 "timestamp": current_ts,
@@ -185,32 +195,25 @@ def fetch_deribit_gex(currency="BTC"):
                 "put_flow": round(net_put_fiat_flow, 2)
             }
             redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
-
         all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
         valid_flow_records = []
         records_to_remove_count = 0
-
         for record in all_flow_records:
             f_data = json.loads(record)
             ts_str = f_data['timestamp']
             rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
             if rec_time > time_now: rec_time = rec_time.replace(year=time_now.year - 1)
-            
             if (time_now - rec_time).total_seconds() <= 86400.0:
                 valid_flow_records.append(f_data)
-            else:
-                records_to_remove_count += 1
-
+            else: records_to_remove_count += 1
         if records_to_remove_count > 0:
             redis.ltrim(REDIS_FLOW_KEY, records_to_remove_count, -1)
-
     except Exception as ex:
         print(f"Cloud Flow Lifecycle Eviction Guard Triggered: {ex}")
         valid_flow_records = []
 
     total_accumulated_call_flow = 0.0
     total_accumulated_put_flow = 0.0
-
     if valid_flow_records:
         for f_data in valid_flow_records:
             total_accumulated_call_flow += f_data["call_flow"]
@@ -220,10 +223,6 @@ def fetch_deribit_gex(currency="BTC"):
         total_accumulated_put_flow = net_put_fiat_flow
 
     net_flow_bias = total_accumulated_call_flow + total_accumulated_put_flow
-    call_oi_3m = call_df_3m['oi'].sum()
-    put_oi_3m = put_df_3m['oi'].sum()
-    cp_ratio = put_oi_3m / call_oi_3m if call_oi_3m > 0 else 0
-
     center_spot_1k = round(spot_price / 1000.0) * 1000
     lower_bound = center_spot_1k - 8000
     upper_bound = center_spot_1k + 8000
@@ -235,23 +234,24 @@ def fetch_deribit_gex(currency="BTC"):
     df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     df_chart_range['abs_gex_contribution'] = df_chart_range['gex'].abs()
     
-    # --- ENGINE ADVANCED SEPARATION FOR BREAKDOWN MATRIX ---
-    # Bullish Gamma: Retail buys Calls (gex < 0) or sells Puts (gex > 0)
     df_chart_range['bullish_gex'] = df_chart_range.apply(
         lambda r: abs(r['gex']) if (r['type'] == 'C' and r['gex'] < 0) or (r['type'] == 'P' and r['gex'] > 0) else 0.0, axis=1
     )
-    # Bearish Gamma: Retail sells Calls (gex > 0) or buys Puts (gex < 0)
     df_chart_range['bearish_gex'] = df_chart_range.apply(
         lambda r: -abs(r['gex']) if (r['type'] == 'C' and r['gex'] > 0) or (r['type'] == 'P' and r['gex'] < 0) else 0.0, axis=1
     )
     
     bucket_data = df_chart_range.groupby('strike_bucket').agg({
-        'gex': 'sum', 
-        'abs_gex_contribution': 'sum',
-        'bullish_gex': 'sum',
-        'bearish_gex': 'sum'
+        'gex': 'sum', 'abs_gex_contribution': 'sum', 'bullish_gex': 'sum', 'bearish_gex': 'sum'
     })
     
+    # --- IV SKEW OVERVIEW CALCULATION ARRAY (7D EXPIRY) ---
+    df_7d_range = df_7d[(df_7d['strike'] >= lower_bound) & (df_7d['strike'] <= upper_bound)].copy() if not df_7d.empty else pd.DataFrame()
+    bucket_iv_map = {}
+    if not df_7d_range.empty:
+        df_7d_range['strike_bucket'] = df_7d_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
+        bucket_iv_map = df_7d_range.groupby('strike_bucket')['iv'].mean().to_dict()
+
     target_buckets = list(range(int(lower_bound), int(upper_bound) + 1000, 1000))
     chart_matrix = []
     
@@ -260,14 +260,11 @@ def fetch_deribit_gex(currency="BTC"):
         abs_gex_val = bucket_data.get('abs_gex_contribution', {}).get(b_strike, 0.0)
         bull_val = bucket_data.get('bullish_gex', {}).get(b_strike, 0.0)
         bear_val = bucket_data.get('bearish_gex', {}).get(b_strike, 0.0)
+        iv_skew_val = bucket_iv_map.get(b_strike, 0.0)
         
         chart_matrix.append({
-            "index": idx, 
-            "strike": b_strike, 
-            "gex": gex_val, 
-            "abs_gex": abs_gex_val,
-            "bullish_gex": bull_val,
-            "bearish_gex": bear_val
+            "index": idx, "strike": b_strike, "gex": gex_val, "abs_gex": abs_gex_val,
+            "bullish_gex": bull_val, "bearish_gex": bear_val, "iv_skew": iv_skew_val
         })
 
     return {
@@ -276,7 +273,8 @@ def fetch_deribit_gex(currency="BTC"):
         "call_gex_3d": call_gex_3d, "put_gex_3d": put_gex_3d, "net_gex_3d": net_gex_3d, "call_weight_3d": call_weight_pct_3d,
         "max_pain": max_pain_level, "flip": flip_level, "breakout": breakout_price, 
         "resistance": resistance_level, "support": support_level, "call_inflow": total_accumulated_call_flow, 
-        "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "cp_ratio": cp_ratio, "chart_data": chart_matrix
+        "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "chart_data": chart_matrix,
+        "skew_25d": skew_25d_val
     }
 
 def fmt_gex(val):
@@ -297,23 +295,23 @@ def main(page: ft.Page):
     net_axis = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     breakdown_axis = ft.ChartAxis(labels=[], labels_size=24)
-    
-    history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
-    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=0)
+    iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
+    iv_left_axis = ft.ChartAxis(labels=[], labels_size=42)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     
-    # 3M UI Elements
     call_gex_txt_3m = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
     put_gex_txt_3m = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.RED_400)
     net_gex_txt_3m = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
     weight_txt_3m = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_300)
 
-    # 3D UI Elements
     call_gex_txt_3d = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.ORANGE_400)
     put_gex_txt_3d = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.INDIGO_400)
     net_gex_txt_3d = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
     weight_txt_3d = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_800)
+    
+    # 25D Skew Dynamic Row Indicator Control
+    skew_25d_txt = ft.Text("0.00%", size=18, weight=ft.FontWeight.BOLD)
     
     pain_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600)
     flip_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.ORANGE_400)
@@ -344,27 +342,21 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    history_line_chart = ft.LineChart(
+    # --- NEW REQUESTED IV SKEW CURVE LINE CHART INSTANTIATION ---
+    iv_skew_line_chart = ft.LineChart(
         data_series=[
             ft.LineChartData(
                 data_points=[],
-                color=ft.colors.ORANGE_400,
-                stroke_width=2.5,
+                color=ft.colors.ORANGE_700, # Dark Orange
+                stroke_width=3,
                 curved=True,
             )
         ],
-        left_axis=history_left_axis,
-        bottom_axis=history_bottom_axis,
-        min_x=0,
-        max_x=21,
+        bottom_axis=iv_bottom_axis,
+        left_axis=iv_left_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
-        animate=True, interactive=True, height=220
-    )
-
-    native_timeline_container = ft.Container(
-        content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(left=51, right=11)
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        animate=True, interactive=True, height=240
     )
 
     def create_section_header(title):
@@ -378,19 +370,23 @@ def main(page: ft.Page):
         if m:
             spot_txt.value = f"${m['spot']:,.2f}"
             
-            # Populate 3M Metrics
             call_gex_txt_3m.value = fmt_gex(m['call_gex_3m'])
             put_gex_txt_3m.value = fmt_gex(m['put_gex_3m'])
             net_gex_txt_3m.value = fmt_gex(m['net_gex_3m'])
             net_gex_txt_3m.color = ft.colors.GREEN_400 if m['net_gex_3m'] >= 0 else ft.colors.RED_400
             weight_txt_3m.value = f"{m['call_weight_3m']:.1f}%"
 
-            # Populate 3D Metrics
             call_gex_txt_3d.value = fmt_gex(m['call_gex_3d'])
             put_gex_txt_3d.value = fmt_gex(m['put_gex_3d'])
             net_gex_txt_3d.value = fmt_gex(m['net_gex_3d'])
             net_gex_txt_3d.color = ft.colors.ORANGE_400 if m['net_gex_3d'] >= 0 else ft.colors.INDIGO_400
             weight_txt_3d.value = f"{m['call_weight_3d']:.1f}%"
+            
+            # Update 25D Skew with Requested Color Mapping Criteria
+            skew_25d_txt.value = f"{m['skew_25d']:+.2f}%"
+            if m['skew_25d'] > 0: skew_25d_txt.color = ft.colors.GREEN_400
+            elif m['skew_25d'] < 0: skew_25d_txt.color = ft.colors.RED_400
+            else: skew_25d_txt.color = ft.colors.GREY_400
             
             pain_txt.value = f"${m['max_pain']:,.0f}"
             flip_txt.value = f"${m['flip']:,.0f}"
@@ -400,10 +396,8 @@ def main(page: ft.Page):
             
             inflows_call_txt.value = fmt_unsigned_fiat_flow(m['call_inflow'])
             inflows_call_txt.color = ft.colors.GREEN_400 if m['call_inflow'] >= 0 else ft.colors.RED_400
-            
             outflows_put_txt.value = fmt_unsigned_fiat_flow(m['put_inflow'])
             outflows_put_txt.color = ft.colors.GREEN_400 if m['put_inflow'] >= 0 else ft.colors.RED_400
-            
             net_flow_txt.value = fmt_unsigned_fiat_flow(m['net_flow'])
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             
@@ -417,124 +411,60 @@ def main(page: ft.Page):
                     try:
                         logged_data = json.loads(last_gex_element)
                         logged_ts = logged_data.get("timestamp") or datetime.fromtimestamp(logged_data.get("epoch"), tz=timezone.utc).strftime("%m-%d %H:%M")
-                        if logged_ts == current_refresh_ts:
-                            is_gex_dup = True
-                    except Exception:
-                        pass
-
+                        if logged_ts == current_refresh_ts: is_gex_dup = True
+                    except Exception: pass
                 if not is_gex_dup:
-                    snapshot = {
-                        "timestamp": current_refresh_ts,
-                        "gex": round(m['net_gex_3m'], 2)
-                    }
+                    snapshot = {"timestamp": current_refresh_ts, "gex": round(m['net_gex_3m'], 2)}
                     redis.rpush(REDIS_KEY, json.dumps(snapshot))
                     redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
-            except Exception as ex:
-                print(f"Cloud Logging Interrupted: {ex}")
-
-            # --- GENERATE STEP LABELS ACROSS 21 HOURS ---
-            current_utc_hour = time_now.hour
-            row_elements = []
-            for step in range(0, 22, 3):
-                calculated_hour = (current_utc_hour - 21 + step) % 24
-                row_elements.append(
-                    ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
-                )
-            native_timeline_container.content.controls = row_elements
-
-            # --- POPULATE ROLLING HISTORICAL TREND ---
-            try:
-                raw_records = redis.lrange(REDIS_KEY, 0, -1)
-                if raw_records:
-                    filtered_records = []
-                    
-                    for record in raw_records:
-                        try:
-                            data = json.loads(record)
-                            
-                            if "timestamp" in data:
-                                ts_str = data['timestamp']
-                            elif "epoch" in data:
-                                ts_str = datetime.fromtimestamp(data['epoch'], tz=timezone.utc).strftime("%m-%d %H:%M")
-                            else:
-                                continue
-                                
-                            if "-" in ts_str:
-                                rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                            else:
-                                rec_time = datetime.strptime(f"{time_now.year}-{time_now.month}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                                
-                            if rec_time > time_now:
-                                rec_time = rec_time.replace(year=time_now.year - 1)
-                                
-                            hours_diff = (time_now - rec_time).total_seconds() / 3600.0
-                            if hours_diff <= 21.0:
-                                data['epoch_track'] = rec_time.timestamp()
-                                data['hours_ago'] = hours_diff
-                                filtered_records.append(data)
-                        except Exception:
-                            continue
-
-                    filtered_records.sort(key=lambda x: x['epoch_track'])
-
-                    gex_in_millions = [data['gex'] / 1000000.0 for data in filtered_records]
-                    max_m = max(gex_in_millions, default=50.0)
-                    min_m = min(gex_in_millions, default=-50.0)
-                    
-                    largest_abs = max(abs(max_m), abs(min_m), 50.0)
-                    fixed_bound = math.ceil(largest_abs / 50.0) * 50.0
-                    
-                    history_line_chart.min_y = -fixed_bound * 1000000.0
-                    history_line_chart.max_y = fixed_bound * 1000000.0
-
-                    y_labels = []
-                    current_step = -fixed_bound
-                    while current_step <= fixed_bound:
-                        sign = "+" if current_step > 0 else ""
-                        label_text = f"{sign}{int(current_step)}M" if current_step != 0 else "0"
-                        y_labels.append(
-                            ft.ChartAxisLabel(
-                                value=current_step * 1000000.0,
-                                label=ft.Text(label_text, size=10, color=ft.colors.GREY_400)
-                            )
-                        )
-                        current_step += 50.0
-                    
-                    history_left_axis.labels = y_labels
-                    history_line_chart.left_axis = history_left_axis
-                    history_line_chart.bottom_axis = history_bottom_axis
-
-                    line_points = []
-                    for data in filtered_records:
-                        x_pos = 21.0 - data['hours_ago']
-                        if 0 <= x_pos <= 21:
-                            line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
-                    
-                    history_line_chart.data_series[0].data_points = line_points
-            except Exception as ex:
-                print(f"Cloud Read Failure: {ex}")
+            except Exception as ex: print(f"Cloud Logging Interrupted: {ex}")
             
-            # --- BAR CHARTS ENGINE ---
-            new_groups, abs_groups, breakdown_groups, new_labels, min_dist, spot_index = [], [], [], [], float('inf'), -1
+            # --- BAR CHARTS & IV SKEW RENDERING LOOPS ---
+            new_groups, abs_groups, breakdown_groups, iv_points, new_labels, min_dist, spot_index = [], [], [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist: min_dist, spot_index = dist, item['index']
             
+            # Gather non-zero IV levels to scale Y axis cleanly
+            valid_ivs = [item['iv_skew'] for item in m['chart_data'] if item['iv_skew'] > 0]
+            max_iv = max(valid_ivs, default=100.0)
+            min_iv = min(valid_ivs, default=0.0)
+            
+            # Align Y-axis grid matrix constraints to 10% divisions
+            floor_y = math.floor(min_iv / 10.0) * 10.0
+            ceil_y = math.ceil(max_iv / 10.0) * 10.0
+            if ceil_y == floor_y: ceil_y += 10.0
+            
+            iv_skew_line_chart.min_y = floor_y
+            iv_skew_line_chart.max_y = ceil_y
+            iv_skew_line_chart.min_x = 0
+            iv_skew_line_chart.max_x = len(m['chart_data']) - 1
+
+            y_iv_labels = []
+            curr_y = floor_y
+            while curr_y <= ceil_y:
+                y_iv_labels.append(ft.ChartAxisLabel(value=curr_y, label=ft.Text(f"{int(curr_y)}%", size=10, color=ft.colors.GREY_400)))
+                curr_y += 10.0
+            iv_left_axis.labels = y_iv_labels
+            
             for item in m['chart_data']:
                 val, abs_val, strike_val, is_spot = item['gex'], item['abs_gex'], item['strike'], (item['index'] == spot_index)
-                bull_val, bear_val = item['bullish_gex'], item['bearish_gex']
+                bull_val, bear_val, iv_val = item['bullish_gex'], item['bearish_gex'], item['iv_skew']
                 
                 new_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val, color=ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
                 abs_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_val, color=ft.colors.YELLOW, width=12, border_radius=2)]))
                 
-                # UPDATED: Plotted bearish bars with sky blue hex string property
                 breakdown_groups.append(ft.BarChartGroup(
                     x=item['index'],
                     bar_rods=[
-                        ft.BarChartRod(from_y=0, to_y=bull_val, color="#FFFFF0", width=6, border_radius=1), # Light Ivory
-                        ft.BarChartRod(from_y=0, to_y=bear_val, color="#87CEEB", width=6, border_radius=1)  # Sky Blue
+                        ft.BarChartRod(from_y=0, to_y=bull_val, color="#FFFFF0", width=6, border_radius=1),
+                        ft.BarChartRod(from_y=0, to_y=bear_val, color="#87CEEB", width=6, border_radius=1)
                     ]
                 ))
+                
+                # Append coordinates onto the dynamic IV Skew curve data series
+                if iv_val > 0:
+                    iv_points.append(ft.LineChartDataPoint(x=item['index'], y=iv_val))
                 
                 if strike_val % 2000 == 0:
                     label_color = ft.colors.BLUE_200 if is_spot else ft.colors.GREY_400
@@ -546,8 +476,12 @@ def main(page: ft.Page):
             abs_gex_chart.bar_groups = abs_groups
             abs_axis.labels = new_labels
             
+            drop_axis_labels = list(new_labels) # safe duplicate axis mapping profile references cleanly
             breakdown_gex_chart.bar_groups = breakdown_groups
-            breakdown_axis.labels = new_labels
+            breakdown_axis.labels = drop_axis_labels
+            
+            iv_skew_line_chart.data_series[0].data_points = iv_points
+            iv_bottom_axis.labels = list(new_labels)
             
             page.update()
 
@@ -560,24 +494,26 @@ def main(page: ft.Page):
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart)),
         create_section_header("ABSOLUTE GAMMA EXPOSURE"),
         ft.Card(content=ft.Container(padding=15, content=abs_gex_chart)),
-        
         create_section_header("GAMMA EXPOSURE BREAKDOWN"),
         ft.Card(content=ft.Container(padding=15, content=breakdown_gex_chart)),
         
         create_section_header("TOTAL GAMMA EXPOSURE (3M)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
-            ui_row_item("Call Gamma", call_gex_txt_3m), 
-            ui_row_item("Put Gamma", put_gex_txt_3m), 
-            ui_row_item("Net Gamma", net_gex_txt_3m), 
-            ui_row_item("Call Weight (%)", weight_txt_3m)
+            ui_row_item("Call Gamma", call_gex_txt_3m), ui_row_item("Put Gamma", put_gex_txt_3m), ui_row_item("Net Gamma", net_gex_txt_3m), ui_row_item("Call Weight (%)", weight_txt_3m)
         ]))),
         create_section_header("TOTAL GAMMA EXPOSURE (3D)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
-            ui_row_item("Call Gamma", call_gex_txt_3d), 
-            ui_row_item("Put Gamma", put_gex_txt_3d), 
-            ui_row_item("Net Gamma", net_gex_txt_3d), 
-            ui_row_item("Call Weight (%)", weight_txt_3d)
+            ui_row_item("Call Gamma", call_gex_txt_3d), ui_row_item("Put Gamma", put_gex_txt_3d), ui_row_item("Net Gamma", net_gex_txt_3d), ui_row_item("Call Weight (%)", weight_txt_3d)
         ]))),
+        
+        # --- NEW REQUESTED IV SKEW ANALYSIS (7D) CARD SECTION ---
+        create_section_header("IV SKEW ANALYSIS (7D)"),
+        ft.Card(content=ft.Container(padding=15, content=ft.Column([
+            iv_skew_line_chart,
+            ft.Container(height=10),
+            ui_row_item("Current 25D strike Skew", skew_25d_txt)
+        ]))),
+        
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
