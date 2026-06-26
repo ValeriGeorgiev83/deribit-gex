@@ -133,7 +133,7 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # --- LIVE OPTION TAPE LOGIC ---
+    # --- live option tape directional processing ---
     net_call_fiat_flow = 0.0
     net_put_fiat_flow = 0.0
     try:
@@ -156,12 +156,12 @@ def fetch_deribit_gex(currency="BTC"):
                 if direction == 'buy': net_put_fiat_flow -= fiat_notional_value
                 else: net_put_fiat_flow += fiat_notional_value
     except Exception as ex:
-        print(f"Option Tape Fetch Interrupted: {ex}")
+        print(f"Option Trade Fetch Interrupted: {ex}")
 
     time_now = datetime.now(timezone.utc)
     current_ts = time_now.strftime("%m-%d %H:%M")
 
-    # --- TIME-BASED HISTORICAL LOG CLEAN-UP ENGINE ---
+    # --- time-based historical logs life-cycle engine ---
     try:
         last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
         is_duplicate = False
@@ -227,7 +227,7 @@ def fetch_deribit_gex(currency="BTC"):
     df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     df_chart_range['abs_gex_contribution'] = df_chart_range['gex'].abs()
     
-    # FIXED: Isolated isolated data frames away from the tracking timeline thread variables
+    # Isolated from the rolling tracking timeline thread variables to prevent absolute mutations
     bucket_summary_matrix = df_chart_range.groupby('strike_bucket').agg({'gex': 'sum', 'abs_gex_contribution': 'sum'})
     
     target_buckets = list(range(int(lower_bound), int(upper_bound) + 1000, 1000))
@@ -296,7 +296,7 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # FIXED: Re-instated clean instantiation properties
+    # RESTORED LOOPHOLE FIX: Instantiated with clean canvas parameters to bypass canvas grid conflicts
     history_line_chart = ft.LineChart(
         data_series=[
             ft.LineChartData(
@@ -306,8 +306,6 @@ def main(page: ft.Page):
                 curved=True,
             )
         ],
-        min_x=0,
-        max_x=21,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=220
@@ -395,6 +393,7 @@ def main(page: ft.Page):
                         try:
                             data = json.loads(record)
                             
+                            # Safe fallback extracts strings or floats fluidly
                             if "timestamp" in data:
                                 ts_str = data['timestamp']
                             elif "epoch" in data:
@@ -443,8 +442,10 @@ def main(page: ft.Page):
                         )
                         current_step += 50.0
                     
-                    # FIXED: Apply structural configurations fluidly AFTER data arrays process cleanly
+                    # FIXED RENDERING SEQUENCE: Inject configuration bounds into canvas window dynamically 
                     history_left_axis.labels = y_labels
+                    history_line_chart.min_x = 0
+                    history_line_chart.max_x = 21
                     history_line_chart.left_axis = history_left_axis
                     history_line_chart.bottom_axis = history_bottom_axis
 
