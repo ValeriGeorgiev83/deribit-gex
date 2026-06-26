@@ -10,7 +10,7 @@ from datetime import datetime, timezone, timedelta
 from upstash_redis import Redis
 redis = Redis(
     url="https://large-ghost-131173.upstash.io", 
-    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0TzlhOWJmZGM1MTg5OWViZDIxMw"
+    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
 )
 REDIS_KEY = "deribit_gex_3d_history"
 REDIS_FLOW_KEY = "deribit_flow_24h_history"
@@ -133,7 +133,7 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # --- OPTIONS TAPE DIRECTIONAL ENGINE ---
+    # --- METHOD B: OPTION TAPE DIRECTIONAL ENGINE FIAT VALUED ---
     net_call_fiat_flow = 0.0
     net_put_fiat_flow = 0.0
     try:
@@ -250,10 +250,10 @@ def fmt_gex(val):
     abs_val = abs(val)
     return f"{sign}{abs_val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{abs_val:.1f}"
 
-# RESTORED / MODIFIED: Outputs pure absolute numbers scaled into millions ($M) without front signs
-def fmt_unsigned_fiat_flow(val):
-    millions_val = abs(val) / 1000000.0
-    return f"{millions_val:,.1f}M"
+def fmt_fiat_order_flow(val):
+    sign = "+" if val >= 0 else ""
+    millions_val = val / 1000000.0
+    return f"{sign}{millions_val:,.1f}M"
 
 def main(page: ft.Page):
     page.title = "Deribit GEX Terminal"
@@ -265,6 +265,7 @@ def main(page: ft.Page):
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
+    # Hide native bottom ticks completely to allow our Stack layout to lock alignment
     history_bottom_axis = ft.ChartAxis(labels=[], labels_size=0)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
@@ -310,13 +311,13 @@ def main(page: ft.Page):
         max_x=21,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
-        animate=True, interactive=True, height=220 
+        animate=True, interactive=True, height=220 # Marginally lowered canvas height to create neat row overlay alignment room
     )
 
-    # MODIFIED: Calibration layouts extended exactly to left=51 and right=11 padding parameters
+    # Re-implemented custom layout row container pinned to exact chart canvas bounds via left padding
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(left=51, right=11)
+        padding=ft.padding.only(left=58, right=18)
     )
 
     def create_section_header(title):
@@ -340,14 +341,13 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}"
             
-            # Applying unsigned configurations directly into flow monitors
-            inflows_call_txt.value = fmt_unsigned_fiat_flow(m['call_inflow'])
+            inflows_call_txt.value = fmt_fiat_order_flow(m['call_inflow'])
             inflows_call_txt.color = ft.colors.GREEN_400 if m['call_inflow'] >= 0 else ft.colors.RED_400
             
-            outflows_put_txt.value = fmt_unsigned_fiat_flow(m['put_inflow'])
+            outflows_put_txt.value = fmt_fiat_order_flow(m['put_inflow'])
             outflows_put_txt.color = ft.colors.GREEN_400 if m['put_inflow'] >= 0 else ft.colors.RED_400
             
-            net_flow_txt.value = fmt_unsigned_fiat_flow(m['net_flow'])
+            net_flow_txt.value = fmt_fiat_order_flow(m['net_flow'])
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
@@ -411,6 +411,7 @@ def main(page: ft.Page):
                     filtered_records.sort(key=lambda x: x['epoch'])
 
                     gex_in_millions = [data['gex'] / 1000000.0 for data in filtered_records]
+                    # FIXED: Added sequence fallback values to prevent max() from throwing a chart-disappearing ValueError
                     max_m = max(gex_in_millions, default=50.0)
                     min_m = min(gex_in_millions, default=-50.0)
                     
@@ -434,7 +435,6 @@ def main(page: ft.Page):
                         current_step += 50.0
                     history_left_axis.labels = y_labels
 
-                    # RESTORED: Working chronological distance logic mapped cleanly onto grid frames
                     line_points = []
                     for data in filtered_records:
                         x_pos = 21.0 - data['hours_ago']
@@ -473,16 +473,17 @@ def main(page: ft.Page):
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
-        # MODIFIED: Header text configured to denote (24 HRS)
-        create_section_header("NET GAMMA EXPOSURE (24 HRS)"),
+        ft.Text("NET GAMMA EXPOSURE (21 HRS)", size=13, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_500),
         ft.Card(
             content=ft.Container(
                 padding=ft.padding.only(left=5, right=20, top=15, bottom=10), 
                 content=ft.Stack([
+                    # Layer 1: Line Chart
                     ft.Column([
                         history_line_chart,
                         ft.Container(height=14)
                     ]),
+                    # Layer 2: Time Container row explicitly locked with 58px offset padding to perfectly match grid vertical lines
                     ft.Container(
                         content=native_timeline_container,
                         bottom=0, left=0, right=0
@@ -500,8 +501,7 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
-        # MODIFIED: Labels updated precisely to specification rows
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Net Call Order Flow ($ Value)", inflows_call_txt), ui_row_item("Net Put Order Flow ($ Value)", outflows_put_txt), ui_row_item("Net Premium Bias", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
     )
     refresh_dashboard()
 
