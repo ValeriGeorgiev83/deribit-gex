@@ -309,10 +309,9 @@ def main(page: ft.Page):
         max_x=21,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
-        animate=True, interactive=True, height=220 
+        animate=True, interactive=True, height=220
     )
 
-    # Restored working padding values (left=51, right=11) to match layout grid bounds
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         padding=ft.padding.only(left=51, right=11)
@@ -357,10 +356,17 @@ def main(page: ft.Page):
                 last_gex_element = redis.lindex(REDIS_KEY, -1)
                 is_gex_dup = False
                 if last_gex_element:
-                    if json.loads(last_gex_element).get("timestamp") == current_refresh_ts:
-                        is_gex_dup = True
+                    try:
+                        logged_data = json.loads(last_gex_element)
+                        # FIXED: Safely check both structures (epoch float or string payload)
+                        logged_ts = logged_data.get("timestamp") or datetime.fromtimestamp(logged_data.get("epoch"), tz=timezone.utc).strftime("%m-%d %H:%M")
+                        if logged_ts == current_refresh_ts:
+                            is_gex_dup = True
+                    except Exception:
+                        pass
 
                 if not is_gex_dup:
+                    # Write the string format that your working script loop relies on
                     snapshot = {
                         "timestamp": current_refresh_ts,
                         "gex": round(m['net_gex_3m'], 2)
@@ -380,7 +386,7 @@ def main(page: ft.Page):
                 )
             native_timeline_container.content.controls = row_elements
 
-            # --- POPULATE ROLLING HISTORICAL TREND (RESTORED VERSION) ---
+            # --- POPULATE ROLLING HISTORICAL TREND ---
             try:
                 raw_records = redis.lrange(REDIS_KEY, 0, -1)
                 if raw_records:
@@ -389,7 +395,15 @@ def main(page: ft.Page):
                     for record in raw_records:
                         try:
                             data = json.loads(record)
-                            ts_str = data['timestamp']
+                            
+                            # FIXED: Fallback parser resolves key conflicts if entry contains a float epoch instead of a string
+                            if "timestamp" in data:
+                                ts_str = data['timestamp']
+                            elif "epoch" in data:
+                                ts_str = datetime.fromtimestamp(data['epoch'], tz=timezone.utc).strftime("%m-%d %H:%M")
+                            else:
+                                continue
+                                
                             if "-" in ts_str:
                                 rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
                             else:
@@ -432,7 +446,7 @@ def main(page: ft.Page):
                         current_step += 50.0
                     history_left_axis.labels = y_labels
 
-                    # RESTORED: Precise chronological conditional mapping sequence logic
+                    # RESTORED: Working chronological map engine
                     line_points = []
                     for data in filtered_records:
                         x_pos = 21.0 - data['hours_ago']
