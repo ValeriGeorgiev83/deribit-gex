@@ -226,14 +226,16 @@ def fetch_deribit_gex(currency="BTC"):
         
     df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     df_chart_range['abs_gex_contribution'] = df_chart_range['gex'].abs()
-    bucket_data = df_chart_range.groupby('strike_bucket').agg({'gex': 'sum', 'abs_gex_contribution': 'sum'})
+    
+    # FIXED: Isolated isolated data frames away from the tracking timeline thread variables
+    bucket_summary_matrix = df_chart_range.groupby('strike_bucket').agg({'gex': 'sum', 'abs_gex_contribution': 'sum'})
     
     target_buckets = list(range(int(lower_bound), int(upper_bound) + 1000, 1000))
     chart_matrix = []
     
     for idx, b_strike in enumerate(target_buckets):
-        gex_val = bucket_data.get('gex', {}).get(b_strike, 0.0)
-        abs_gex_val = bucket_data.get('abs_gex_contribution', {}).get(b_strike, 0.0)
+        gex_val = bucket_summary_matrix.get('gex', {}).get(b_strike, 0.0)
+        abs_gex_val = bucket_summary_matrix.get('abs_gex_contribution', {}).get(b_strike, 0.0)
         chart_matrix.append({"index": idx, "strike": b_strike, "gex": gex_val, "abs_gex": abs_gex_val})
 
     return {
@@ -294,7 +296,7 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # FIXED: Re-instated clean canvas definition directly matching your pristine working build configuration
+    # FIXED: Re-instated clean instantiation properties
     history_line_chart = ft.LineChart(
         data_series=[
             ft.LineChartData(
@@ -348,7 +350,7 @@ def main(page: ft.Page):
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            # --- REDIS LOGGING ENGINE ---
+            # --- REDIS LOGGING ENGINE (WITH TIME DUP GUARD) ---
             time_now = datetime.now(timezone.utc)
             current_refresh_ts = time_now.strftime("%m-%d %H:%M")
             try:
@@ -393,7 +395,6 @@ def main(page: ft.Page):
                         try:
                             data = json.loads(record)
                             
-                            # Fallback logic handles string or float payloads cleanly
                             if "timestamp" in data:
                                 ts_str = data['timestamp']
                             elif "epoch" in data:
@@ -442,7 +443,7 @@ def main(page: ft.Page):
                         )
                         current_step += 50.0
                     
-                    # FIXED: Apply structural labels dynamically here AFTER arrays have processed cleanly
+                    # FIXED: Apply structural configurations fluidly AFTER data arrays process cleanly
                     history_left_axis.labels = y_labels
                     history_line_chart.left_axis = history_left_axis
                     history_line_chart.bottom_axis = history_bottom_axis
