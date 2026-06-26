@@ -81,16 +81,14 @@ def fetch_deribit_gex(currency="BTC", expiry_filter="0DTE+3DTE"):
     if expiry_filter == "0DTE":
         df_selected = base_df[base_df['days_to_expiry'] <= 1.0]
     elif expiry_filter == "3DTE":
-        # Only options expiring past 1 day up to 3 days
         df_selected = base_df[(base_df['days_to_expiry'] > 1.0) & (base_df['days_to_expiry'] <= 3.0)]
     elif expiry_filter == "3 Months":
         df_selected = base_df[base_df['days_to_expiry'] <= 90.0]
-    else:  # "0DTE+3DTE" or Default case
+    else:  # "0DTE+3DTE"
         df_selected = base_df[base_df['days_to_expiry'] <= 3.0]
 
-    # If the narrow dynamic filter returns an empty set, fallback gracefully to full overview data
     if df_selected.empty:
-        df_selected = base_df[base_df['days_to_expiry'] <= 90.0]
+        df_selected = base_df[base_df['days_to_expiry'] <= 3.0]
 
     call_df = df_selected[df_selected['type'] == 'C']
     put_df = df_selected[df_selected['type'] == 'P']
@@ -98,7 +96,7 @@ def fetch_deribit_gex(currency="BTC", expiry_filter="0DTE+3DTE"):
     call_gex = call_df['gex'].sum()
     put_gex = put_df['gex'].sum()
     net_gex = call_gex + put_gex
-    net_gex_3m = base_df[base_df['days_to_expiry'] <= 90.0]['gex'].sum() # Keep standard baseline for historical tracking log
+    net_gex_3m = base_df[base_df['days_to_expiry'] <= 90.0]['gex'].sum()
     
     total_abs_gex = abs(call_gex) + abs(put_gex)
     call_weight_pct = (abs(call_gex) / total_abs_gex * 100) if total_abs_gex > 0 else 50.0
@@ -221,6 +219,11 @@ def fetch_deribit_gex(currency="BTC", expiry_filter="0DTE+3DTE"):
 
     net_flow_bias = total_accumulated_call_flow + total_accumulated_put_flow
 
+    # RESTORED BOUNDARY DEFINITIONS HERE:
+    center_spot_1k = round(spot_price / 1000.0) * 1000
+    lower_bound = center_spot_1k - 8000
+    upper_bound = center_spot_1k + 8000
+
     df_chart_range = df_selected[(df_selected['strike'] >= lower_bound) & (df_selected['strike'] <= upper_bound)].copy()
     if df_chart_range.empty:
         df_chart_range = df_selected.copy()
@@ -291,7 +294,6 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # --- NEW DROPDOWN EXPIRATION MENU CONTROL ---
     expiry_dropdown = ft.Dropdown(
         label="Expiration Horizon",
         value="0DTE+3DTE",
@@ -315,7 +317,6 @@ def main(page: ft.Page):
         return ft.Container(content=ft.Row([ft.Text(label, size=14, color=ft.colors.GREY_300), component], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=ft.padding.symmetric(vertical=4))
 
     def refresh_dashboard(e=None):
-        # Read chosen value dynamically on every calculation loop refresh
         selected_expiry = expiry_dropdown.value
         m = fetch_deribit_gex("BTC", expiry_filter=selected_expiry)
         
@@ -389,7 +390,6 @@ def main(page: ft.Page):
             
             page.update()
 
-    # --- UI LAYOUT ASSEMBLY ---
     page.add(
         ft.Row([
             ft.Text("⚡ Deribit GEX Terminal", size=20, weight=ft.FontWeight.BOLD),
@@ -398,7 +398,6 @@ def main(page: ft.Page):
         
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
-        # Section Header incorporating the custom dropdown selector control side-by-side
         ft.Row([
             create_section_header("NET GAMMA PROFILES BY STRIKE"),
             expiry_dropdown
