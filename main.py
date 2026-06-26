@@ -191,7 +191,7 @@ def fetch_deribit_gex(currency="BTC"):
         if not is_gex_dup:
             snapshot = {
                 "timestamp": current_ts,
-                "gex": round(net_gex_3d, 2)  # Log options with expiry not later than 3 days
+                "gex": round(net_gex_3d, 2)  
             }
             redis.rpush(REDIS_KEY, json.dumps(snapshot))
             redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
@@ -314,7 +314,6 @@ def main(page: ft.Page):
     iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_left_axis = ft.ChartAxis(labels=[], labels_size=42)
     
-    # --- NEW HISTORICAL NET CHANGE CHART AXES ---
     history_change_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     history_change_left_axis = ft.ChartAxis(labels=[], labels_size=42)
 
@@ -369,7 +368,6 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # --- NEW REQUESTED NET GAMMA CHANGE (24H) BAR CANVAS ---
     history_change_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=history_change_bottom_axis,
         left_axis=history_change_left_axis,
@@ -419,7 +417,7 @@ def main(page: ft.Page):
             net_flow_txt.value = fmt_unsigned_fiat_flow(m['net_flow'])
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
             
-            # --- POPULATE ROLLING HISTORICAL TREND (AVERAGED HOURLY BLOCKS) ---
+            # --- POPULATE ROLLING HISTORICAL TREND ---
             time_now = datetime.now(timezone.utc)
             try:
                 raw_records = redis.lrange(REDIS_KEY, 0, -1)
@@ -451,18 +449,15 @@ def main(page: ft.Page):
                     if history_points_list:
                         df_hist = pd.DataFrame(history_points_list)
                         
-                        # Generate 24 structured sequential baseline hour blocks ending at the current hour
                         sequence_hours_list = []
                         for h in range(23, -1, -1):
                             sequence_hours_list.append((time_now - timedelta(hours=h)).strftime("%H"))
 
-                        # Compute the exact mean net gamma for each hour block using Pandas aggregate maps
                         grouped_hist = df_hist.groupby('round_hour_str')['gex'].mean().to_dict()
                         
                         hist_bars = []
                         hist_labels = []
                         
-                        # Fix vertical axis parameters to 50M intervals dynamically
                         all_means_in_millions = [grouped_hist.get(h, 0.0) / 1000000.0 for h in sequence_hours_list]
                         largest_hist_abs = max(max([abs(m) for m in all_means_in_millions], default=50.0), 50.0)
                         fixed_hist_bound = math.ceil(largest_hist_abs / 50.0) * 50.0
@@ -471,7 +466,8 @@ def main(page: ft.Page):
                         history_change_bar_chart.max_y = fixed_hist_bound * 1000000.0
                         
                         y_hist_labels = []
-                        curr_h_step = -fixed_bound_step = fixed_hist_bound
+                        fixed_bound_step = fixed_hist_bound
+                        curr_h_step = -fixed_bound_step  # FIXED: SyntaxError loophole closed cleanly here
                         while curr_h_step <= fixed_hist_bound:
                             h_sign = "+" if curr_h_step > 0 else ""
                             lbl_text = f"{h_sign}{int(curr_h_step)}M" if curr_h_step != 0 else "0"
@@ -482,13 +478,11 @@ def main(page: ft.Page):
                         for idx, h_str in enumerate(sequence_hours_list):
                             avg_gex_val = grouped_hist.get(h_str, 0.0)
                             
-                            # Construct violet color bar rods spanning above or below the zero horizon line
                             hist_bars.append(ft.BarChartGroup(
                                 x=idx,
                                 bar_rods=[ft.BarChartRod(from_y=0, to_y=avg_gex_val, color=ft.colors.VIOLET, width=10, border_radius=2)]
                             ))
                             
-                            # Plot time markers precisely every 3 hours onto the horizontal grid matrix
                             if idx % 3 == 0:
                                 hist_labels.append(ft.ChartAxisLabel(value=idx, label=ft.Text(h_str, size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)))
                         
@@ -572,7 +566,6 @@ def main(page: ft.Page):
         create_section_header("ABSOLUTE GAMMA EXPOSURE"),
         ft.Card(content=ft.Container(padding=15, content=abs_gex_chart)),
         
-        # --- NEW REQUESTED NET GAMMA CHANGE (24H) HISTORICAL CARD PLACEMENT ---
         create_section_header("NET GAMMA CHANGE (24H)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=history_change_bar_chart)),
         
