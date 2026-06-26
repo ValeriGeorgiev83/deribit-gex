@@ -4,7 +4,7 @@ import json
 import requests
 import pandas as pd
 import flet as ft
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # Initialize Upstash Redis
 from upstash_redis import Redis
@@ -133,7 +133,7 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # --- METHOD B: OPTION TAPE DIRECTIONAL ENGINE ($ VALUED) ---
+    # --- OPTIONS TAPE DIRECTIONAL ENGINE ---
     net_call_fiat_flow = 0.0
     net_put_fiat_flow = 0.0
     try:
@@ -151,7 +151,7 @@ def fetch_deribit_gex(currency="BTC"):
             
             if ins_name.endswith('-C'):
                 if direction == 'buy': net_call_fiat_flow += fiat_notional_value
-                else: net_call_fiat_flow -= fiat_notional_value  
+                else: net_call_fiat_flow -= fiat_notional_value
             elif ins_name.endswith('-P'):
                 if direction == 'buy': net_put_fiat_flow -= fiat_notional_value
                 else: net_put_fiat_flow += fiat_notional_value
@@ -159,7 +159,7 @@ def fetch_deribit_gex(currency="BTC"):
         print(f"Option Trade Fetch Interrupted: {ex}")
 
     time_now = datetime.now(timezone.utc)
-    current_refresh_epoch = time_now.timestamp()
+    current_ts = time_now.strftime("%m-%d %H:%M")
 
     # --- TIME-BASED HISTORICAL LOG CLEAN-UP ENGINE ---
     try:
@@ -167,12 +167,12 @@ def fetch_deribit_gex(currency="BTC"):
         is_duplicate = False
         if last_logged_element:
             last_logged_data = json.loads(last_logged_element)
-            if abs(current_refresh_epoch - last_logged_data.get("epoch", 0)) < 60.0:
+            if last_logged_data.get("timestamp") == current_ts:
                 is_duplicate = True
 
         if not is_duplicate:
             flow_snapshot = {
-                "epoch": current_refresh_epoch,
+                "timestamp": current_ts,
                 "call_flow": round(net_call_fiat_flow, 2),
                 "put_flow": round(net_put_fiat_flow, 2)
             }
@@ -184,9 +184,11 @@ def fetch_deribit_gex(currency="BTC"):
 
         for record in all_flow_records:
             f_data = json.loads(record)
-            rec_epoch = f_data.get("epoch", 0)
+            ts_str = f_data['timestamp']
+            rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+            if rec_time > time_now: rec_time = rec_time.replace(year=time_now.year - 1)
             
-            if (current_refresh_epoch - rec_epoch) <= 86400.0:
+            if (time_now - rec_time).total_seconds() <= 86400.0:
                 valid_flow_records.append(f_data)
             else:
                 records_to_remove_count += 1
@@ -248,6 +250,7 @@ def fmt_gex(val):
     abs_val = abs(val)
     return f"{sign}{abs_val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{abs_val:.1f}"
 
+# RESTORED / MODIFIED: Outputs pure absolute numbers scaled into millions ($M) without front signs
 def fmt_unsigned_fiat_flow(val):
     millions_val = abs(val) / 1000000.0
     return f"{millions_val:,.1f}M"
@@ -304,13 +307,13 @@ def main(page: ft.Page):
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
         min_x=0,
-        max_x=21, 
+        max_x=21,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
-        animate=True, interactive=True, height=220
+        animate=True, interactive=True, height=220 
     )
 
-    # Padding Left calibrated to 51px and Right to 11px to match canvas margins
+    # MODIFIED: Calibration layouts extended exactly to left=51 and right=11 padding parameters
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         padding=ft.padding.only(left=51, right=11)
@@ -337,6 +340,7 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}"
             
+            # Applying unsigned configurations directly into flow monitors
             inflows_call_txt.value = fmt_unsigned_fiat_flow(m['call_inflow'])
             inflows_call_txt.color = ft.colors.GREEN_400 if m['call_inflow'] >= 0 else ft.colors.RED_400
             
@@ -348,19 +352,19 @@ def main(page: ft.Page):
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            # --- REDIS LOGGING ENGINE ---
+            # --- REDIS LOGGING ENGINE (WITH TIME DUP GUARD) ---
             time_now = datetime.now(timezone.utc)
-            current_refresh_epoch = time_now.timestamp()
+            current_refresh_ts = time_now.strftime("%m-%d %H:%M")
             try:
                 last_gex_element = redis.lindex(REDIS_KEY, -1)
                 is_gex_dup = False
                 if last_gex_element:
-                    if abs(current_refresh_epoch - json.loads(last_gex_element).get("epoch", 0)) < 60.0:
+                    if json.loads(last_gex_element).get("timestamp") == current_refresh_ts:
                         is_gex_dup = True
 
                 if not is_gex_dup:
                     snapshot = {
-                        "epoch": current_refresh_epoch,
+                        "timestamp": current_refresh_ts,
                         "gex": round(m['net_gex_3m'], 2)
                     }
                     redis.rpush(REDIS_KEY, json.dumps(snapshot))
@@ -371,10 +375,8 @@ def main(page: ft.Page):
             # --- GENERATE STEP LABELS ACROSS 21 HOURS ---
             current_utc_hour = time_now.hour
             row_elements = []
-            start_hour = (current_utc_hour - 21) % 24  
-            
-            for step in range(0, 22, 3): 
-                calculated_hour = (start_hour + step) % 24
+            for step in range(0, 22, 3):
+                calculated_hour = (current_utc_hour - 21 + step) % 24
                 row_elements.append(
                     ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
                 )
@@ -389,25 +391,24 @@ def main(page: ft.Page):
                     for record in raw_records:
                         try:
                             data = json.loads(record)
-                            rec_epoch = data.get("epoch")
-                            
-                            if not rec_epoch:
-                                ts_str = data['timestamp']
-                                if "-" in ts_str:
-                                    rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                                else:
-                                    rec_time = datetime.strptime(f"{time_now.year}-{time_now.month}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                                if rec_time > time_now: rec_time = rec_time.replace(year=time_now.year - 1)
-                                rec_epoch = rec_time.timestamp()
-
-                            hours_diff = (current_refresh_epoch - rec_epoch) / 3600.0
-                            if hours_diff <= 21.0: 
-                                data['epoch_computed'] = rec_epoch
+                            ts_str = data['timestamp']
+                            if "-" in ts_str:
+                                rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                            else:
+                                rec_time = datetime.strptime(f"{time_now.year}-{time_now.month}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                                
+                            if rec_time > time_now:
+                                rec_time = rec_time.replace(year=time_now.year - 1)
+                                
+                            hours_diff = (time_now - rec_time).total_seconds() / 3600.0
+                            if hours_diff <= 21.0:
+                                data['epoch'] = rec_time.timestamp()
+                                data['hours_ago'] = hours_diff
                                 filtered_records.append(data)
                         except Exception:
                             continue
 
-                    filtered_records.sort(key=lambda x: x['epoch_computed'])
+                    filtered_records.sort(key=lambda x: x['epoch'])
 
                     gex_in_millions = [data['gex'] / 1000000.0 for data in filtered_records]
                     max_m = max(gex_in_millions, default=50.0)
@@ -433,19 +434,12 @@ def main(page: ft.Page):
                         current_step += 50.0
                     history_left_axis.labels = y_labels
 
-                    # --- CHRONOLOGICAL ABSOLUTE GRID MAPPER ---
+                    # RESTORED: Working chronological distance logic mapped cleanly onto grid frames
                     line_points = []
                     for data in filtered_records:
-                        rec_dt = datetime.fromtimestamp(data['epoch_computed'], tz=timezone.utc)
-                        rec_hour = rec_dt.hour
-                        rec_minute = rec_dt.minute
-                        
-                        # FIXED: Normalized placement math checks hour offsets against absolute layout scale
-                        hour_offset = (rec_hour - start_hour) % 24
-                        x_pos = hour_offset + (rec_minute / 60.0)
-                        
-                        x_pos = max(0.0, min(21.0, x_pos))
-                        line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
+                        x_pos = 21.0 - data['hours_ago']
+                        if 0 <= x_pos <= 21:
+                            line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
                     
                     history_line_chart.data_series[0].data_points = line_points
             except Exception as ex:
@@ -479,6 +473,7 @@ def main(page: ft.Page):
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
+        # MODIFIED: Header text configured to denote (24 HRS)
         create_section_header("NET GAMMA EXPOSURE (24 HRS)"),
         ft.Card(
             content=ft.Container(
@@ -505,6 +500,7 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
+        # MODIFIED: Labels updated precisely to specification rows
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt), ui_row_item("C/P Ratio", cp_ratio_txt)])))
     )
     refresh_dashboard()
