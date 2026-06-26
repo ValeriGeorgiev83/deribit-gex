@@ -184,7 +184,7 @@ def fetch_deribit_gex(currency="BTC"):
                 "call_flow": round(net_call_fiat_flow, 2),
                 "put_flow": round(net_put_fiat_flow, 2)
             }
-            redis.rpush(REDIS_FLOW_KEY, json.dumps(snapshot))
+            redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
 
         all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
         valid_flow_records = []
@@ -235,7 +235,7 @@ def fetch_deribit_gex(currency="BTC"):
     df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     df_chart_range['abs_gex_contribution'] = df_chart_range['gex'].abs()
     
-    # --- ENGINE ADVANCED SEPARATION FOR THE NEW BREAKDOWN MATRIX ---
+    # --- ENGINE ADVANCED SEPARATION FOR BREAKDOWN MATRIX ---
     # Bullish Gamma: Retail buys Calls (gex < 0) or sells Puts (gex > 0)
     df_chart_range['bullish_gex'] = df_chart_range.apply(
         lambda r: abs(r['gex']) if (r['type'] == 'C' and r['gex'] < 0) or (r['type'] == 'P' and r['gex'] > 0) else 0.0, axis=1
@@ -337,7 +337,6 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # --- NEW INTERACTIVE BREAKDOWN CANVAS INSTANTIATION ---
     breakdown_gex_chart = ft.BarChart(
         bar_groups=[], bottom_axis=breakdown_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
@@ -528,12 +527,12 @@ def main(page: ft.Page):
                 new_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val, color=ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
                 abs_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_val, color=ft.colors.YELLOW, width=12, border_radius=2)]))
                 
-                # --- RENDER TWO BARS PER STRIKE (IVORY & NAVY BLUE SIDE BY SIDE) ---
+                # UPDATED: Plotted bearish bars with sky blue hex string property
                 breakdown_groups.append(ft.BarChartGroup(
                     x=item['index'],
                     bar_rods=[
                         ft.BarChartRod(from_y=0, to_y=bull_val, color="#FFFFF0", width=6, border_radius=1), # Light Ivory
-                        ft.BarChartRod(from_y=0, to_y=bear_val, color="#000080", width=6, border_radius=1)  # Navy Blue
+                        ft.BarChartRod(from_y=0, to_y=bear_val, color="#87CEEB", width=6, border_radius=1)  # Sky Blue
                     ]
                 ))
                 
@@ -562,7 +561,6 @@ def main(page: ft.Page):
         create_section_header("ABSOLUTE GAMMA EXPOSURE"),
         ft.Card(content=ft.Container(padding=15, content=abs_gex_chart)),
         
-        # NEW REQUESTED GAMMA EXPOSURE BREAKDOWN BAR CARD SECTION
         create_section_header("GAMMA EXPOSURE BREAKDOWN"),
         ft.Card(content=ft.Container(padding=15, content=breakdown_gex_chart)),
         
