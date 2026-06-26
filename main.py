@@ -279,6 +279,11 @@ def fmt_gex(val):
     abs_val = abs(val)
     return f"{sign}{abs_val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{abs_val:.1f}"
 
+# RESTORED: Formatting function to fix NameError
+def fmt_unsigned_fiat_flow(val):
+    millions_val = abs(val) / 1000000.0
+    return f"{millions_val:,.1f}M"
+
 def main(page: ft.Page):
     page.title = "Deribit GEX Terminal"
     page.theme_mode = ft.ThemeMode.DARK
@@ -365,18 +370,14 @@ def main(page: ft.Page):
             net_gex_txt_3d.color = ft.colors.ORANGE_400 if m['net_gex_3d'] >= 0 else ft.colors.INDIGO_400
             weight_txt_3d.value = f"{m['call_weight_3d']:.1f}%"
             
-            # --- RESTRUCTURED 25D SKEW REGIME COLORING LOGIC BLOCK ---
             skew_val = m['skew_25d']
             if skew_val <= 0.4 and skew_val >= -0.4:
-                # Neutral Regime bounds check (-0.4% to +0.4%)
                 skew_25d_txt.value = f"{skew_val:+.2f}% (Neutral Regime)"
                 skew_25d_txt.color = ft.colors.GREY_400
             elif skew_val > 0.4:
-                # Positive Bearish Regime check
                 skew_25d_txt.value = f"+{skew_val:.2f}% (Bearish Regime)"
                 skew_25d_txt.color = ft.colors.RED_400
             else:
-                # Negative Bullish Regime check
                 skew_25d_txt.value = f"{skew_val:.2f}% (Bullish Regime)"
                 skew_25d_txt.color = ft.colors.GREEN_400
             
@@ -418,8 +419,8 @@ def main(page: ft.Page):
                 if dist < min_dist: min_dist, spot_index = dist, item['index']
             
             valid_ivs = [item['iv_skew'] for item in m['chart_data'] if item['iv_skew'] > 0]
-            max_iv = max(valid_ivs, default=100.0)
-            min_iv = min(valid_ivs, default=0.0)
+            max_iv = max_iv if (max_iv := max(valid_ivs, default=100.0)) > 0 else 100.0
+            min_iv = min_iv if (min_iv := min(valid_ivs, default=0.0)) > 0 else 0.0
             
             floor_y = math.floor(min_iv / 10.0) * 10.0
             ceil_y = math.ceil(max_iv / 10.0) * 10.0
