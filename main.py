@@ -177,7 +177,7 @@ def fetch_deribit_gex(currency="BTC"):
     time_now = datetime.now(timezone.utc)
     current_ts = time_now.strftime("%m-%d %H:%M")
 
-    # --- TIME-BASED HISTORICAL LOG CLEAN-UP ENGINE (LOGS 3D EXPRIY NET GEX) ---
+    # --- TIME-BASED HISTORICAL LOG CLEAN-UP ENGINE (LOGS 3D EXPIRY NET GEX) ---
     try:
         last_gex_element = redis.lindex(REDIS_KEY, -1)
         is_gex_dup = False
@@ -466,8 +466,8 @@ def main(page: ft.Page):
                         history_change_bar_chart.max_y = fixed_hist_bound * 1000000.0
                         
                         y_hist_labels = []
-                        fixed_bound_step = fixed_hist_bound
-                        curr_h_step = -fixed_bound_step  # FIXED: SyntaxError loophole closed cleanly here
+                        # FIXED: Loop limit and scale constraints variables map cleanly now
+                        curr_h_step = -fixed_hist_bound
                         while curr_h_step <= fixed_hist_bound:
                             h_sign = "+" if curr_h_step > 0 else ""
                             lbl_text = f"{h_sign}{int(curr_h_step)}M" if curr_h_step != 0 else "0"
