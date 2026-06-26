@@ -6,7 +6,7 @@ import pandas as pd
 import flet as ft
 from datetime import datetime, timezone, timedelta
 
-# Initialize Upstash Redis
+# Initialize Upstash Redis with the exact working credentials
 from upstash_redis import Redis
 redis = Redis(
     url="https://large-ghost-131173.upstash.io", 
@@ -349,7 +349,7 @@ def main(page: ft.Page):
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            # --- REDIS LOGGING ENGINE ---
+            # --- REDIS LOGGING ENGINE (WITH TIME DUP GUARD) ---
             time_now = datetime.now(timezone.utc)
             current_refresh_ts = time_now.strftime("%m-%d %H:%M")
             try:
@@ -358,7 +358,6 @@ def main(page: ft.Page):
                 if last_gex_element:
                     try:
                         logged_data = json.loads(last_gex_element)
-                        # FIXED: Safely check both structures (epoch float or string payload)
                         logged_ts = logged_data.get("timestamp") or datetime.fromtimestamp(logged_data.get("epoch"), tz=timezone.utc).strftime("%m-%d %H:%M")
                         if logged_ts == current_refresh_ts:
                             is_gex_dup = True
@@ -366,7 +365,6 @@ def main(page: ft.Page):
                         pass
 
                 if not is_gex_dup:
-                    # Write the string format that your working script loop relies on
                     snapshot = {
                         "timestamp": current_refresh_ts,
                         "gex": round(m['net_gex_3m'], 2)
@@ -396,7 +394,7 @@ def main(page: ft.Page):
                         try:
                             data = json.loads(record)
                             
-                            # FIXED: Fallback parser resolves key conflicts if entry contains a float epoch instead of a string
+                            # Fallback logic handles both epoch types safely
                             if "timestamp" in data:
                                 ts_str = data['timestamp']
                             elif "epoch" in data:
@@ -446,7 +444,6 @@ def main(page: ft.Page):
                         current_step += 50.0
                     history_left_axis.labels = y_labels
 
-                    # RESTORED: Working chronological map engine
                     line_points = []
                     for data in filtered_records:
                         x_pos = 21.0 - data['hours_ago']
