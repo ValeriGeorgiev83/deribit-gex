@@ -338,36 +338,12 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # FIXED: Swapped LineChart constructor out for a dedicated BarChart layout panel
     iv_skew_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=iv_bottom_axis,
         left_axis=iv_left_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         animate=True, interactive=True, height=240
-    )
-
-    history_line_chart = ft.LineChart(
-        data_series=[
-            ft.LineChartData(
-                data_points=[],
-                color=ft.colors.ORANGE_400,
-                stroke_width=2.5,
-                curved=True,
-            )
-        ],
-        left_axis=history_left_axis,
-        bottom_axis=history_bottom_axis,
-        min_x=0,
-        max_x=21,
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
-        animate=True, interactive=True, height=220
-    )
-
-    native_timeline_container = ft.Container(
-        content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.padding.only(left=51, right=11)
     )
 
     def create_section_header(title):
@@ -468,7 +444,6 @@ def main(page: ft.Page):
                     ]
                 ))
                 
-                # FIXED: Formulated dark orange BarChartGroup blocks for each index slot coordinate
                 iv_bar_groups.append(ft.BarChartGroup(
                     x=item['index'],
                     bar_rods=[
@@ -490,7 +465,6 @@ def main(page: ft.Page):
             breakdown_gex_chart.bar_groups = breakdown_groups
             breakdown_axis.labels = drop_axis_labels
             
-            # Update the custom bar group arrays and bottom axis labels matrix dynamically
             iv_skew_bar_chart.bar_groups = iv_bar_groups
             iv_bottom_axis.labels = list(new_labels)
             
@@ -517,7 +491,6 @@ def main(page: ft.Page):
             ui_row_item("Call Gamma", call_gex_txt_3d), ui_row_item("Put Gamma", put_gex_txt_3d), ui_row_item("Net Gamma", net_gex_txt_3d), ui_row_item("Call Weight (%)", weight_txt_3d)
         ]))),
         
-        # --- IV SKEW ANALYSIS (7D) CARD SECTION (WITH DYNAMIC BAR GRAPH ENGINE) ---
         create_section_header("IV SKEW ANALYSIS (7D)"),
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
             iv_skew_bar_chart,
