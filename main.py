@@ -279,10 +279,6 @@ def fmt_gex(val):
     abs_val = abs(val)
     return f"{sign}{abs_val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{abs_val:.1f}"
 
-def fmt_unsigned_fiat_flow(val):
-    millions_val = abs(val) / 1000000.0
-    return f"{millions_val:,.1f}M"
-
 def main(page: ft.Page):
     page.title = "Deribit GEX Terminal"
     page.theme_mode = ft.ThemeMode.DARK
@@ -307,7 +303,7 @@ def main(page: ft.Page):
     net_gex_txt_3d = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
     weight_txt_3d = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_800)
     
-    skew_25d_txt = ft.Text("0.00%", size=18, weight=ft.FontWeight.BOLD)
+    skew_25d_txt = ft.Text("0.00% (Neutral Regime)", size=18, weight=ft.FontWeight.BOLD)
     
     pain_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600)
     flip_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.ORANGE_400)
@@ -369,10 +365,20 @@ def main(page: ft.Page):
             net_gex_txt_3d.color = ft.colors.ORANGE_400 if m['net_gex_3d'] >= 0 else ft.colors.INDIGO_400
             weight_txt_3d.value = f"{m['call_weight_3d']:.1f}%"
             
-            skew_25d_txt.value = f"{m['skew_25d']:+.2f}%"
-            if m['skew_25d'] > 0: skew_25d_txt.color = ft.colors.GREEN_400
-            elif m['skew_25d'] < 0: skew_25d_txt.color = ft.colors.RED_400
-            else: skew_25d_txt.color = ft.colors.GREY_400
+            # --- RESTRUCTURED 25D SKEW REGIME COLORING LOGIC BLOCK ---
+            skew_val = m['skew_25d']
+            if skew_val <= 0.4 and skew_val >= -0.4:
+                # Neutral Regime bounds check (-0.4% to +0.4%)
+                skew_25d_txt.value = f"{skew_val:+.2f}% (Neutral Regime)"
+                skew_25d_txt.color = ft.colors.GREY_400
+            elif skew_val > 0.4:
+                # Positive Bearish Regime check
+                skew_25d_txt.value = f"+{skew_val:.2f}% (Bearish Regime)"
+                skew_25d_txt.color = ft.colors.RED_400
+            else:
+                # Negative Bullish Regime check
+                skew_25d_txt.value = f"{skew_val:.2f}% (Bullish Regime)"
+                skew_25d_txt.color = ft.colors.GREEN_400
             
             pain_txt.value = f"${m['max_pain']:,.0f}"
             flip_txt.value = f"${m['flip']:,.0f}"
