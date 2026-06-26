@@ -309,10 +309,10 @@ def main(page: ft.Page):
         max_x=21,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
-        animate=True, interactive=True, height=220
+        animate=True, interactive=True, height=220 
     )
 
-    # Padding Left calibrated to 51px and Right to 11px to match canvas layout lines
+    # Restored working padding values (left=51, right=11) to match layout grid bounds
     native_timeline_container = ft.Container(
         content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         padding=ft.padding.only(left=51, right=11)
@@ -350,7 +350,7 @@ def main(page: ft.Page):
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            # --- REDIS LOGGING ENGINE (WITH TIME DUP GUARD) ---
+            # --- REDIS LOGGING ENGINE ---
             time_now = datetime.now(timezone.utc)
             current_refresh_ts = time_now.strftime("%m-%d %H:%M")
             try:
@@ -432,6 +432,7 @@ def main(page: ft.Page):
                         current_step += 50.0
                     history_left_axis.labels = y_labels
 
+                    # RESTORED: Precise chronological conditional mapping sequence logic
                     line_points = []
                     for data in filtered_records:
                         x_pos = 21.0 - data['hours_ago']
