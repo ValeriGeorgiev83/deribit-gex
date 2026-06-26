@@ -16,8 +16,8 @@ REDIS_KEY = "deribit_gex_3d_history"
 REDIS_FLOW_KEY = "deribit_flow_24h_history"
 MAX_HISTORY_POINTS = 3500
 
-def fetch_deribit_gex(currency="BTC", expiry_filter="0DTE+3DTE"):
-    """Fetches and calculates GEX and market flow data from Deribit based on chosen expiration filter."""
+def fetch_deribit_gex(currency="BTC"):
+    """Fetches and calculates GEX and market flow data from Deribit."""
     try:
         idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
         idx_res = requests.get(idx_url).json()
@@ -77,37 +77,31 @@ def fetch_deribit_gex(currency="BTC", expiry_filter="0DTE+3DTE"):
     base_df = pd.DataFrame(parsed_options)
     if base_df.empty: return None
     
-    # --- DYNAMIC EXPIRATION HORIZON FILTERS ---
-    if expiry_filter == "0DTE":
-        df_selected = base_df[base_df['days_to_expiry'] <= 1.0]
-    elif expiry_filter == "3DTE":
-        df_selected = base_df[(base_df['days_to_expiry'] > 1.0) & (base_df['days_to_expiry'] <= 3.0)]
-    elif expiry_filter == "3 Months":
-        df_selected = base_df[base_df['days_to_expiry'] <= 90.0]
-    else:  # "0DTE+3DTE"
-        df_selected = base_df[base_df['days_to_expiry'] <= 3.0]
+    df_3m = base_df[base_df['days_to_expiry'] <= 90.0]
+    df_3d = base_df[base_df['days_to_expiry'] <= 3.0]
+    if df_3d.empty: df_3d = df_3m
 
-    if df_selected.empty:
-        df_selected = base_df[base_df['days_to_expiry'] <= 3.0]
-
-    call_df = df_selected[df_selected['type'] == 'C']
-    put_df = df_selected[df_selected['type'] == 'P']
+    call_df_3m = df_3m[df_3m['type'] == 'C']
+    put_df_3m = df_3m[df_3m['type'] == 'P']
     
-    call_gex = call_df['gex'].sum()
-    put_gex = put_df['gex'].sum()
+    call_gex = call_df_3m['gex'].sum()
+    put_gex = put_df_3m['gex'].sum()
     net_gex = call_gex + put_gex
-    net_gex_3m = base_df[base_df['days_to_expiry'] <= 90.0]['gex'].sum()
+    net_gex_3m = net_gex
     
     total_abs_gex = abs(call_gex) + abs(put_gex)
     call_weight_pct = (abs(call_gex) / total_abs_gex * 100) if total_abs_gex > 0 else 50.0
     
-    strikes_selected = sorted(df_selected['strike'].unique())
+    call_df_3d = df_3d[df_3d['type'] == 'C']
+    put_df_3d = df_3d[df_3d['type'] == 'P']
+    
+    strikes_3d = sorted(df_3d['strike'].unique())
     min_pain = float('inf')
     max_pain_level = spot_price
     
-    for s in strikes_selected:
+    for s in strikes_3d:
         pain = 0
-        for _, row in df_selected.iterrows():
+        for _, row in df_3d.iterrows():
             if row['type'] == 'C' and row['strike'] < s: 
                 pain += (s - row['strike']) * row['oi']
             elif row['type'] == 'P' and row['strike'] > s: 
@@ -116,9 +110,9 @@ def fetch_deribit_gex(currency="BTC", expiry_filter="0DTE+3DTE"):
             min_pain = pain
             max_pain_level = s
 
-    df_selected_copy = df_selected.copy()
-    df_selected_copy['macro_bucket'] = df_selected_copy['strike'].apply(lambda x: round(x / 1000.0) * 1000)
-    macro_grouped = df_selected_copy.groupby('macro_bucket')['gex'].sum().sort_index()
+    df_3d_copy = df_3d.copy()
+    df_3d_copy['macro_bucket'] = df_3d_copy['strike'].apply(lambda x: round(x / 1000.0) * 1000)
+    macro_grouped = df_3d_copy.groupby('macro_bucket')['gex'].sum().sort_index()
 
     flip_level = spot_price
     if not macro_grouped.empty:
@@ -132,8 +126,8 @@ def fetch_deribit_gex(currency="BTC", expiry_filter="0DTE+3DTE"):
                 flip_level = round(flip_level)
                 break
 
-    call_strike_gex_3d = call_df.groupby('strike')['gex'].sum()
-    put_strike_gex_3d = put_df.groupby('strike')['gex'].sum().abs()
+    call_strike_gex_3d = call_df_3d.groupby('strike')['gex'].sum()
+    put_strike_gex_3d = put_df_3d.groupby('strike')['gex'].sum().abs()
     
     resistance_level = call_strike_gex_3d.idxmax() if not call_strike_gex_3d.empty else spot_price * 1.02
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
@@ -218,15 +212,17 @@ def fetch_deribit_gex(currency="BTC", expiry_filter="0DTE+3DTE"):
         total_accumulated_put_flow = net_put_fiat_flow
 
     net_flow_bias = total_accumulated_call_flow + total_accumulated_put_flow
+    call_oi_3m = call_df_3m['oi'].sum()
+    put_oi_3m = put_df_3m['oi'].sum()
+    cp_ratio = put_oi_3m / call_oi_3m if call_oi_3m > 0 else 0
 
-    # RESTORED BOUNDARY DEFINITIONS HERE:
     center_spot_1k = round(spot_price / 1000.0) * 1000
     lower_bound = center_spot_1k - 8000
     upper_bound = center_spot_1k + 8000
-
-    df_chart_range = df_selected[(df_selected['strike'] >= lower_bound) & (df_selected['strike'] <= upper_bound)].copy()
+    
+    df_chart_range = df_3d[(df_3d['strike'] >= lower_bound) & (df_3d['strike'] <= upper_bound)].copy()
     if df_chart_range.empty:
-        df_chart_range = df_selected.copy()
+        df_chart_range = df_3m[(df_3m['strike'] >= lower_bound) & (df_3m['strike'] <= upper_bound)].copy()
         
     df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     df_chart_range['abs_gex_contribution'] = df_chart_range['gex'].abs()
@@ -246,7 +242,7 @@ def fetch_deribit_gex(currency="BTC", expiry_filter="0DTE+3DTE"):
         "call_weight": call_weight_pct, "max_pain": max_pain_level, "flip": flip_level,
         "breakout": breakout_price, "resistance": resistance_level, "support": support_level,
         "call_inflow": total_accumulated_call_flow, "put_inflow": total_accumulated_put_flow,
-        "net_flow": net_flow_bias, "chart_data": chart_matrix
+        "net_flow": net_flow_bias, "cp_ratio": cp_ratio, "chart_data": chart_matrix
     }
 
 def fmt_gex(val):
@@ -266,6 +262,9 @@ def main(page: ft.Page):
 
     net_axis = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
+    
+    history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
+    history_bottom_axis = ft.ChartAxis(labels=[], labels_size=0)
 
     spot_txt = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     call_gex_txt = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_400)
@@ -281,6 +280,7 @@ def main(page: ft.Page):
     inflows_call_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
     outflows_put_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
     net_flow_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
+    cp_ratio_txt = ft.Text("0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_300)
 
     gex_bar_chart = ft.BarChart(bar_groups=[], bottom_axis=net_axis, 
                                 horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
@@ -294,20 +294,26 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    expiry_dropdown = ft.Dropdown(
-        label="Expiration Horizon",
-        value="0DTE+3DTE",
-        width=180,
-        height=48,
-        text_size=14,
-        border_radius=8,
-        options=[
-            ft.dropdown.Option("0DTE"),
-            ft.dropdown.Option("3DTE"),
-            ft.dropdown.Option("0DTE+3DTE"),
-            ft.dropdown.Option("3 Months"),
+    # FIXED: Re-instated clean canvas definition directly matching your pristine working build configuration
+    history_line_chart = ft.LineChart(
+        data_series=[
+            ft.LineChartData(
+                data_points=[],
+                color=ft.colors.ORANGE_400,
+                stroke_width=2.5,
+                curved=True,
+            )
         ],
-        on_change=lambda e: refresh_dashboard()
+        min_x=0,
+        max_x=21,
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
+        animate=True, interactive=True, height=220
+    )
+
+    native_timeline_container = ft.Container(
+        content=ft.Row(controls=[], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        padding=ft.padding.only(left=51, right=11)
     )
 
     def create_section_header(title):
@@ -317,9 +323,7 @@ def main(page: ft.Page):
         return ft.Container(content=ft.Row([ft.Text(label, size=14, color=ft.colors.GREY_300), component], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=ft.padding.symmetric(vertical=4))
 
     def refresh_dashboard(e=None):
-        selected_expiry = expiry_dropdown.value
-        m = fetch_deribit_gex("BTC", expiry_filter=selected_expiry)
-        
+        m = fetch_deribit_gex("BTC")
         if m:
             spot_txt.value = f"${m['spot']:,.2f}"
             call_gex_txt.value = fmt_gex(m['call_gex'])
@@ -341,6 +345,8 @@ def main(page: ft.Page):
             
             net_flow_txt.value = fmt_unsigned_fiat_flow(m['net_flow'])
             net_flow_txt.color = ft.colors.GREEN_400 if m['net_flow'] >= 0 else ft.colors.RED_400
+            
+            cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
             # --- REDIS LOGGING ENGINE ---
             time_now = datetime.now(timezone.utc)
@@ -366,6 +372,90 @@ def main(page: ft.Page):
                     redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
             except Exception as ex:
                 print(f"Cloud Logging Interrupted: {ex}")
+
+            # --- GENERATE STEP LABELS ACROSS 21 HOURS ---
+            current_utc_hour = time_now.hour
+            row_elements = []
+            for step in range(0, 22, 3):
+                calculated_hour = (current_utc_hour - 21 + step) % 24
+                row_elements.append(
+                    ft.Text(f"{calculated_hour:02d}", size=10, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
+                )
+            native_timeline_container.content.controls = row_elements
+
+            # --- POPULATE ROLLING HISTORICAL TREND ---
+            try:
+                raw_records = redis.lrange(REDIS_KEY, 0, -1)
+                if raw_records:
+                    filtered_records = []
+                    
+                    for record in raw_records:
+                        try:
+                            data = json.loads(record)
+                            
+                            # Fallback logic handles string or float payloads cleanly
+                            if "timestamp" in data:
+                                ts_str = data['timestamp']
+                            elif "epoch" in data:
+                                ts_str = datetime.fromtimestamp(data['epoch'], tz=timezone.utc).strftime("%m-%d %H:%M")
+                            else:
+                                continue
+                                
+                            if "-" in ts_str:
+                                rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                            else:
+                                rec_time = datetime.strptime(f"{time_now.year}-{time_now.month}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                                
+                            if rec_time > time_now:
+                                rec_time = rec_time.replace(year=time_now.year - 1)
+                                
+                            hours_diff = (time_now - rec_time).total_seconds() / 3600.0
+                            if hours_diff <= 21.0:
+                                data['epoch_track'] = rec_time.timestamp()
+                                data['hours_ago'] = hours_diff
+                                filtered_records.append(data)
+                        except Exception:
+                            continue
+
+                    filtered_records.sort(key=lambda x: x['epoch_track'])
+
+                    gex_in_millions = [data['gex'] / 1000000.0 for data in filtered_records]
+                    max_m = max(gex_in_millions, default=50.0)
+                    min_m = min(gex_in_millions, default=-50.0)
+                    
+                    largest_abs = max(abs(max_m), abs(min_m), 50.0)
+                    fixed_bound = math.ceil(largest_abs / 50.0) * 50.0
+                    
+                    history_line_chart.min_y = -fixed_bound * 1000000.0
+                    history_line_chart.max_y = fixed_bound * 1000000.0
+
+                    y_labels = []
+                    current_step = -fixed_bound
+                    while current_step <= fixed_bound:
+                        sign = "+" if current_step > 0 else ""
+                        label_text = f"{sign}{int(current_step)}M" if current_step != 0 else "0"
+                        y_labels.append(
+                            ft.ChartAxisLabel(
+                                value=current_step * 1000000.0,
+                                label=ft.Text(label_text, size=10, color=ft.colors.GREY_400)
+                            )
+                        )
+                        current_step += 50.0
+                    
+                    # FIXED: Apply structural labels dynamically here AFTER arrays have processed cleanly
+                    history_left_axis.labels = y_labels
+                    history_line_chart.left_axis = history_left_axis
+                    history_line_chart.bottom_axis = history_bottom_axis
+
+                    line_points = []
+                    for data in filtered_records:
+                        x_pos = 21.0 - data['hours_ago']
+                        if 0 <= x_pos <= 21:
+                            line_points.append(ft.LineChartDataPoint(x=x_pos, y=data['gex']))
+                    
+                    history_line_chart.data_series[0].data_points = line_points
+            except Exception as ex:
+                print(f"Cloud Read Failure: {ex}")
             
             # --- BAR CHARTS ENGINE ---
             new_groups, abs_groups, new_labels, min_dist, spot_index = [], [], [], float('inf'), -1
@@ -391,18 +481,13 @@ def main(page: ft.Page):
             page.update()
 
     page.add(
-        ft.Row([
-            ft.Text("⚡ Deribit GEX Terminal", size=20, weight=ft.FontWeight.BOLD),
-            ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))
-        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        
+        ft.Row([ft.Text("⚡ Deribit GEX Terminal", size=20, weight=ft.FontWeight.BOLD),
+                ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
-        ft.Row([
-            create_section_header("NET GAMMA PROFILES BY STRIKE"),
-            expiry_dropdown
-        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         
+        
+        create_section_header("NET GAMMA PROFILES BY STRIKE"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart)),
         create_section_header("ABSOLUTE GAMMA EXPOSURE"),
         ft.Card(content=ft.Container(padding=15, content=abs_gex_chart)),
