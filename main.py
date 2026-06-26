@@ -133,7 +133,7 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # --- LIVE OPTION TAPE LOGIC ---
+    # --- Live Option Tape Directional Engine ---
     net_call_fiat_flow = 0.0
     net_put_fiat_flow = 0.0
     try:
@@ -156,12 +156,12 @@ def fetch_deribit_gex(currency="BTC"):
                 if direction == 'buy': net_put_fiat_flow -= fiat_notional_value
                 else: net_put_fiat_flow += fiat_notional_value
     except Exception as ex:
-        print(f"Option Tape Fetch Interrupted: {ex}")
+        print(f"Option Trade Fetch Interrupted: {ex}")
 
     time_now = datetime.now(timezone.utc)
     current_ts = time_now.strftime("%m-%d %H:%M")
 
-    # --- TIME-BASED HISTORICAL LOG CLEAN-UP ENGINE ---
+    # --- Time-Based Historical Log Clean-Up Engine ---
     try:
         last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
         is_duplicate = False
@@ -226,15 +226,14 @@ def fetch_deribit_gex(currency="BTC"):
         
     df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     df_chart_range['abs_gex_contribution'] = df_chart_range['gex'].abs()
-    
-    bucket_summary_matrix = df_chart_range.groupby('strike_bucket').agg({'gex': 'sum', 'abs_gex_contribution': 'sum'})
+    bucket_data = df_chart_range.groupby('strike_bucket').agg({'gex': 'sum', 'abs_gex_contribution': 'sum'})
     
     target_buckets = list(range(int(lower_bound), int(upper_bound) + 1000, 1000))
     chart_matrix = []
     
     for idx, b_strike in enumerate(target_buckets):
-        gex_val = bucket_summary_matrix.get('gex', {}).get(b_strike, 0.0)
-        abs_gex_val = bucket_summary_matrix.get('abs_gex_contribution', {}).get(b_strike, 0.0)
+        gex_val = bucket_data.get('gex', {}).get(b_strike, 0.0)
+        abs_gex_val = bucket_data.get('abs_gex_contribution', {}).get(b_strike, 0.0)
         chart_matrix.append({"index": idx, "strike": b_strike, "gex": gex_val, "abs_gex": abs_gex_val})
 
     return {
@@ -264,6 +263,7 @@ def main(page: ft.Page):
     net_axis = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis = ft.ChartAxis(labels=[], labels_size=24)
     
+    # RESTORED FROM OLD WORKING VERSION: Clean initialization matching the original visual framework
     history_left_axis = ft.ChartAxis(labels=[], labels_size=42)
     history_bottom_axis = ft.ChartAxis(labels=[], labels_size=0)
 
@@ -295,7 +295,7 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # RESTORED LOOPHOLE FIXED: Bound settings explicitly declared at instantiation to ensure grid rendering
+    # RESTORED FROM OLD WORKING VERSION: Pure chart block constructor
     history_line_chart = ft.LineChart(
         data_series=[
             ft.LineChartData(
@@ -305,12 +305,10 @@ def main(page: ft.Page):
                 curved=True,
             )
         ],
-        min_x=0,
-        max_x=21,
-        min_y=-50000000.0,
-        max_y=50000000.0,
         left_axis=history_left_axis,
         bottom_axis=history_bottom_axis,
+        min_x=0,
+        max_x=21,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=3),
         animate=True, interactive=True, height=220
@@ -353,20 +351,15 @@ def main(page: ft.Page):
             
             cp_ratio_txt.value = f"{m['cp_ratio']:.2f}"
             
-            # --- REDIS LOGGING ENGINE (WITH TIME DUP GUARD) ---
+            # --- REDIS LOGGING ENGINE ---
             time_now = datetime.now(timezone.utc)
             current_refresh_ts = time_now.strftime("%m-%d %H:%M")
             try:
                 last_gex_element = redis.lindex(REDIS_KEY, -1)
                 is_gex_dup = False
                 if last_gex_element:
-                    try:
-                        logged_data = json.loads(last_gex_element)
-                        logged_ts = logged_data.get("timestamp") or datetime.fromtimestamp(logged_data.get("epoch"), tz=timezone.utc).strftime("%m-%d %H:%M")
-                        if logged_ts == current_refresh_ts:
-                            is_gex_dup = True
-                    except Exception:
-                        pass
+                    if json.loads(last_gex_element).get("timestamp") == current_refresh_ts:
+                        is_gex_dup = True
 
                 if not is_gex_dup:
                     snapshot = {
@@ -388,7 +381,7 @@ def main(page: ft.Page):
                 )
             native_timeline_container.content.controls = row_elements
 
-            # --- POPULATE ROLLING HISTORICAL TREND ---
+            # --- POPULATE ROLLING HISTORICAL TREND (RESTORED EXACT OLD PARSING BLOCK) ---
             try:
                 raw_records = redis.lrange(REDIS_KEY, 0, -1)
                 if raw_records:
@@ -397,31 +390,24 @@ def main(page: ft.Page):
                     for record in raw_records:
                         try:
                             data = json.loads(record)
-                            
-                            # Safe fallback handles string or float payloads cleanly
-                            if "epoch" in data:
-                                rec_time = datetime.fromtimestamp(data['epoch'], tz=timezone.utc)
-                            elif "timestamp" in data:
-                                ts_str = data['timestamp']
-                                if "-" in ts_str:
-                                    rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                                else:
-                                    rec_time = datetime.strptime(f"{time_now.year}-{time_now.month}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                            ts_str = data['timestamp']
+                            if "-" in ts_str:
+                                rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
                             else:
-                                continue
+                                rec_time = datetime.strptime(f"{time_now.year}-{time_now.month}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
                                 
                             if rec_time > time_now:
                                 rec_time = rec_time.replace(year=time_now.year - 1)
                                 
                             hours_diff = (time_now - rec_time).total_seconds() / 3600.0
                             if hours_diff <= 21.0:
-                                data['epoch_track'] = rec_time.timestamp()
+                                data['epoch'] = rec_time.timestamp()
                                 data['hours_ago'] = hours_diff
                                 filtered_records.append(data)
                         except Exception:
                             continue
 
-                    filtered_records.sort(key=lambda x: x['epoch_track'])
+                    filtered_records.sort(key=lambda x: x['epoch'])
 
                     gex_in_millions = [data['gex'] / 1000000.0 for data in filtered_records]
                     max_m = max(gex_in_millions, default=50.0)
@@ -445,7 +431,6 @@ def main(page: ft.Page):
                             )
                         )
                         current_step += 50.0
-                    
                     history_left_axis.labels = y_labels
 
                     line_points = []
