@@ -494,7 +494,10 @@ def main(page: ft.Page):
     ndf_drift_metric_txt = ft.Text("$0.0M", size=14, weight=ft.FontWeight.BOLD)
     ndf_structural_signal_txt = ft.Text("Neutral Absorption", size=14, weight=ft.FontWeight.BOLD)
 
-    velocity_rank_txt = ft.Text("No anomalies detected", size=14, weight=ft.FontWeight.W_600, color=ft.colors.CYAN_200)
+    # --- MODIFIED: REPLACED SINGLE STRING WITH THREE DISTINCT ANOMALY TEXT OBJECTS ---
+    anomaly_txt_1st = ft.Text("--", size=14, weight=ft.FontWeight.W_600, color=ft.colors.CYAN_200)
+    anomaly_txt_2nd = ft.Text("--", size=14, weight=ft.FontWeight.W_600, color=ft.colors.CYAN_200)
+    anomaly_txt_3rd = ft.Text("--", size=14, weight=ft.FontWeight.W_600, color=ft.colors.CYAN_200)
 
     gex_bar_chart_3d = ft.BarChart(bar_groups=[], bottom_axis=net_axis_3d, 
                                    horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
@@ -715,7 +718,6 @@ def main(page: ft.Page):
                     redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
             except Exception as ex: print(f"Cloud Logging Interrupted: {ex}")
             
-            # --- FIXED: EXACTLY 11 ELEMENTS BALANCED ACROSS BOTH SIDES OF THE UNPACKING STATEMENT ---
             groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_velocity, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
@@ -739,13 +741,21 @@ def main(page: ft.Page):
                 curr_y += 10.0
             iv_left_axis.labels = y_iv_labels
             
+            # --- MODIFIED: SPLIT VELOCITY RANKINGS INTO INDIVIDUAL ROW POSITIONS ---
             sorted_velocity_items = sorted(m['chart_data'], key=lambda x: x['velocity_ratio'], reverse=True)
             top_anomalies = [item for item in sorted_velocity_items if item['velocity_ratio'] > 0][:3]
-            if top_anomalies:
-                rank_strings = [f"${item['strike']/1000:.0f}k Strike ({item['velocity_ratio']:.1f}%)" for item in top_anomalies]
-                velocity_rank_txt.value = " | ".join(rank_strings)
-            else:
-                velocity_rank_txt.value = "Stable Intraday Activity Profile"
+            
+            # Reset row text views defaults
+            anomaly_txt_1st.value = "No dynamic target detected"
+            anomaly_txt_2nd.value = "--"
+            anomaly_txt_3rd.value = "--"
+            
+            if len(top_anomalies) >= 1:
+                anomaly_txt_1st.value = f"${top_anomalies[0]['strike']/1000:.0f}k Strike ({top_anomalies[0]['velocity_ratio']:.1f}%)"
+            if len(top_anomalies) >= 2:
+                anomaly_txt_2nd.value = f"${top_anomalies[1]['strike']/1000:.0f}k Strike ({top_anomalies[1]['velocity_ratio']:.1f}%)"
+            if len(top_anomalies) >= 3:
+                anomaly_txt_3rd.value = f"${top_anomalies[2]['strike']/1000:.0f}k Strike ({top_anomalies[2]['velocity_ratio']:.1f}%)"
 
             for item in m['chart_data']:
                 strike_val, is_spot = item['strike'], (item['index'] == spot_index)
@@ -827,11 +837,14 @@ def main(page: ft.Page):
         create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
 
+        # --- MODIFIED: SEPARATED ANOMALIES DASHBOARD DIRECTLY INTO THREE STACKED ROWS ---
         create_section_header("INTRADAY GAMMA VELOCITY PROFILE (VOLUME / OI)"),
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
             velocity_bar_chart,
             ft.Container(height=10),
-            ui_row_item("Top Session Velocity Anomalies", velocity_rank_txt)
+            ui_row_item("1st Anomaly", anomaly_txt_1st),
+            ui_row_item("2nd Anomaly", anomaly_txt_2nd),
+            ui_row_item("3rd Anomaly", anomaly_txt_3rd)
         ]))),
 
         create_section_header("TOTAL GAMMA EXPOSURE (1M)"),
