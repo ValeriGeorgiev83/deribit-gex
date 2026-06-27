@@ -277,7 +277,6 @@ def fmt_signed_flow(val):
     return f"{sign}{millions_val:,.1f}M"
 
 def main(page: ft.Page):
-    # FIXED: Window tab context title updated to match dashboard designation
     page.title = "DERIBIT GEX DASHBOARD"
     page.theme_mode = ft.ThemeMode.DARK
     page.scroll = ft.ScrollMode.AUTO
@@ -513,7 +512,6 @@ def main(page: ft.Page):
             page.update()
 
     page.add(
-        # FIXED: Removed structural lightning symbol emoji from row layout definition header completely
         ft.Row([ft.Text("DERIBIT GEX DASHBOARD", size=20, weight=ft.FontWeight.BOLD),
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
@@ -553,5 +551,12 @@ def main(page: ft.Page):
     )
     refresh_dashboard()
 
+# --- FIXED: IMPLEMENTED EXPLICIT OVERRIDES ON THE STARTUP RUN ENGINE CONTROLLER ---
 if __name__ == "__main__":
-    ft.app(target=main, port=int(os.environ.get("PORT", 8080)), host="0.0.0.0", view=None)
+    ft.app(
+        target=main, 
+        port=int(os.environ.get("PORT", 8080)), 
+        host="0.0.0.0", 
+        view=None,
+        name="Deribit GEX"  # Replaces the suggestion layout value to your targeted string profile
+    )
