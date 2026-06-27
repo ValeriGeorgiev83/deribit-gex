@@ -116,7 +116,7 @@ def fetch_deribit_gex(currency="BTC"):
             vanna_per_contract = -pdf_value * (d2 / iv)
             vanna_exposure_footprint = oi * vanna_per_contract * 0.01
             if option_type == 'P':
-                vanna_exposure_footprint = -vanna_exposure_footprint # Sign flipped for Put dealer structure orientation
+                vanna_exposure_footprint = -vanna_exposure_footprint
         except Exception:
             approx_gamma = 0.0001 / max(1.0, abs(spot_price - strike))
             charm_day_footprint = 0.0
@@ -372,7 +372,7 @@ def fetch_deribit_gex(currency="BTC"):
 
     df_chart_range_1m = base_df[base_df['days_to_expiry'] <= 30.0][(base_df['strike'] >= lower_bound) & (base_df['strike'] <= upper_bound)].copy()
     df_chart_range_1m['strike_bucket'] = df_chart_range_1m['strike'].apply(lambda x: round(x / 1000.0) * 1000)
-    bucket_data_1m = df_chart_range_1m.groupby('strike_bucket').agg({'gex': 'sum', 'vanna': 'sum'}) # Accumulate Vanna inside tracking loop
+    bucket_data_1m = df_chart_range_1m.groupby('strike_bucket').agg({'gex': 'sum', 'vanna': 'sum'})
     
     df_7d_range = df_7d[(df_7d['strike'] >= lower_bound) & (df_7d['strike'] <= upper_bound)].copy() if not df_7d.empty else pd.DataFrame()
     bucket_iv_map = {}
@@ -440,7 +440,7 @@ def main(page: ft.Page):
     abs_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
-    vanna_bottom_axis = ft.ChartAxis(labels=[], labels_size=24) # Added Vanna horizontal axis label tracking
+    vanna_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     whale_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_left_axis = ft.ChartAxis(labels=[], labels_size=42)
@@ -515,7 +515,6 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # --- NEW: VANNA CONTROLLER INITIALIZATION WITH COLOR CODE #d26e5a ---
     vanna_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=vanna_bottom_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
@@ -703,7 +702,8 @@ def main(page: ft.Page):
                     redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
             except Exception as ex: print(f"Cloud Logging Interrupted: {ex}")
             
-            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], [], -1
+            # --- FIXED: min_dist NOW PROPERLY INITALIZED TO float('inf') INSTEAD OF [] ---
+            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist: min_dist, spot_index = dist, item['index']
@@ -735,8 +735,6 @@ def main(page: ft.Page):
                 groups_abs_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_3d, color=ft.colors.YELLOW, width=12, border_radius=2)]))
                 groups_net_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_1m, color="#bab7ab" if val_1m >= 0 else "#1661b4", width=12, border_radius=2)]))
                 groups_abs_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_1m, color="#ab47bc", width=12, border_radius=2)]))
-                
-                # --- FIXED: BIND REFRESH ITERATOR LOGIC FOR THE VANNA MATRIX PROFILE ---
                 groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a", width=12, border_radius=2)]))
 
                 groups_whale.append(ft.BarChartGroup(
@@ -766,7 +764,6 @@ def main(page: ft.Page):
             abs_gex_chart_1m.bar_groups = groups_abs_1m
             abs_axis_1m.labels = list(new_labels)
             
-            # --- FIXED: RE-BIND DATA ELEMENTS TO VANNA RENDERING FIELD CONTROLLERS ---
             vanna_bar_chart.bar_groups = groups_vanna
             vanna_bottom_axis.labels = list(new_labels)
 
@@ -802,7 +799,6 @@ def main(page: ft.Page):
         create_section_header("ABS GAMMA EXPOSURE BY STRIKE (1M)"),
         ft.Card(content=ft.Container(padding=15, content=abs_gex_chart_1m)),
         
-        # --- FIXED: INTRADAY VANNA EXPOSURE PROFILE CHART CARD INSERTED IMMEDIATELY AFTER ABS 1M CHART ---
         create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
 
