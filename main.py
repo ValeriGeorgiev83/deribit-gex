@@ -97,7 +97,6 @@ def fetch_deribit_gex(currency="BTC"):
             distance = abs(math.log(spot_price / strike))
             approx_gamma = (1.0 / (iv * math.sqrt(t_days) * math.sqrt(2 * math.pi))) * math.exp(-0.5 * (distance / (iv * math.sqrt(t_days)))**2) / spot_price
             
-            # --- Charm Engine using native normal PDF ---
             d1 = (math.log(spot_price / strike) + (0.5 * (iv ** 2)) * t_days) / (iv * math.sqrt(t_days))
             d2 = d1 - iv * math.sqrt(t_days)
             
@@ -769,10 +768,11 @@ def main(page: ft.Page):
             ui_row_item("ITC Score (12)", cohesion_main_txt)
         ]))),
 
+        # --- FIXED: RENAMED COMPONENT LABEL TO "Dealer Bias" ---
         create_section_header("CHARM EXPOSURE ANALYSIS (CEX)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("Estimated Decay Rehedge Flow", charm_flow_metric_txt),
-            ui_row_item("Dealer Rehedge Bias Direction", charm_bias_txt)
+            ui_row_item("Dealer Bias", charm_bias_txt)
         ]))),
 
         create_section_header("LARGE LOT BLOCKS DETECTOR"),
