@@ -50,7 +50,7 @@ def calculate_realized_vol_10d(currency="BTC"):
         return 50.0
 
 def fetch_deribit_gex(currency="BTC"):
-    """Fetches and calculates GEX, flows, delta drifts, whale blocks, IV/RV, Cohesion, Charm, Vanna, and Volume/OI Velocity metrics."""
+    """Fetches and calculates GEX, flows, delta drifts, whale blocks, IV/RV, Cohesion, Charm, Vanna, Volume/OI Velocity, and Aggressor metrics."""
     try:
         idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
         idx_res = requests.get(idx_url).json()
@@ -224,6 +224,12 @@ def fetch_deribit_gex(currency="BTC"):
     net_delta_premium_drift = 0.0
     detected_whale_blocks = []
     
+    # --- IN-MEMORY AGGRESSOR DATA STRUCTURES ---
+    call_ask_hit_premium = 0.0
+    call_bid_hit_premium = 0.0
+    put_ask_hit_premium = 0.0
+    put_bid_hit_premium = 0.0
+    
     try:
         trades_url = f"https://www.deribit.com/api/v2/public/get_last_trades_by_currency?currency={currency}&kind=option&count=1000"
         trades_res = requests.get(trades_url).json()
@@ -244,7 +250,7 @@ def fetch_deribit_gex(currency="BTC"):
             except Exception:
                 continue
                 
-            direction = trade.get('direction', 'buy')
+            direction = trade.get('direction', 'buy') # 'buy' = Hit Ask (Aggressive Buy), 'sell' = Hit Bid (Aggressive Sell)
             amount = float(trade.get('amount', 0))
             trade_index_price = float(trade.get('index_price', spot_price))
             fiat_notional_value = amount * trade_index_price
@@ -265,12 +271,21 @@ def fetch_deribit_gex(currency="BTC"):
 
             net_delta_premium_drift += trade_ndf
 
-            if ins_name.endswith('-C'):
-                if direction == 'buy': net_call_fiat_flow += fiat_notional_value
-                else: net_call_fiat_flow -= fiat_notional_value
-            elif ins_name.endswith('-P'):
-                if direction == 'buy': net_put_fiat_flow -= fiat_notional_value
-                else: net_put_fiat_flow += fiat_notional_value
+            # --- LIVE AGGRESSOR FOOTPRINT LOGIC ---
+            if option_type == 'C':
+                if direction == 'buy':
+                    net_call_fiat_flow += fiat_notional_value
+                    call_ask_hit_premium += fiat_notional_value
+                else:
+                    net_call_fiat_flow -= fiat_notional_value
+                    call_bid_hit_premium += fiat_notional_value
+            elif option_type == 'P':
+                if direction == 'buy':
+                    net_put_fiat_flow -= fiat_notional_value
+                    put_ask_hit_premium += fiat_notional_value
+                else:
+                    net_put_fiat_flow += fiat_notional_value
+                    put_bid_hit_premium += fiat_notional_value
                 
             if days_to_expiry <= 3.0 and fiat_notional_value >= WHALE_THRESHOLD_USD:
                 detected_whale_blocks.append({
@@ -421,7 +436,10 @@ def fetch_deribit_gex(currency="BTC"):
         "implied_vol": atm_iv, "realized_vol": realized_vol_10d_val,
         "trend_score": total_cohesion_points, "pt_gex": pt_gex, "pt_flow": pt_flow, "pt_price": pt_price, "pt_vol": pt_vol,
         "net_charm_flow": hourly_charm_rehedge_contracts,
-        "ndf_drift_total": total_cumulative_ndf_drift
+        "ndf_drift_total": total_cumulative_ndf_drift,
+        # Pack the raw snapshot aggressor premiums safely into engine outputs
+        "aggr_call_ask": call_ask_hit_premium, "aggr_call_bid": call_bid_hit_premium,
+        "aggr_put_ask": put_ask_hit_premium, "aggr_put_bid": put_bid_hit_premium
     }
 
 def fmt_gex(val):
@@ -478,6 +496,13 @@ def main(page: ft.Page):
     outflows_put_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
     net_flow_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
 
+    # --- NEW: INITIALIZE AGGRESSOR METRIC RENDERING FIELDS FOR ORDER FLOW ANALYSIS ---
+    call_ask_hit_txt = ft.Text("0.0M", size=14, color=ft.colors.GREEN_400)
+    call_bid_hit_txt = ft.Text("0.0M", size=14, color=ft.colors.RED_400)
+    put_ask_hit_txt = ft.Text("0.0M", size=14, color=ft.colors.RED_400)
+    put_bid_hit_txt = ft.Text("0.0M", size=14, color=ft.colors.GREEN_400)
+    aggr_net_bias_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.BOLD)
+
     iv_metric_txt = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
     rv_metric_txt = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
     vol_variance_txt = ft.Text("0.0% (Neutral)", size=14, weight=ft.FontWeight.BOLD)
@@ -494,7 +519,6 @@ def main(page: ft.Page):
     ndf_drift_metric_txt = ft.Text("$0.0M", size=14, weight=ft.FontWeight.BOLD)
     ndf_structural_signal_txt = ft.Text("Neutral Absorption", size=14, weight=ft.FontWeight.BOLD)
 
-    # --- MODIFIED: REPLACED SINGLE STRING WITH THREE DISTINCT ANOMALY TEXT OBJECTS ---
     anomaly_txt_1st = ft.Text("--", size=14, weight=ft.FontWeight.W_600, color=ft.colors.CYAN_200)
     anomaly_txt_2nd = ft.Text("--", size=14, weight=ft.FontWeight.W_600, color=ft.colors.CYAN_200)
     anomaly_txt_3rd = ft.Text("--", size=14, weight=ft.FontWeight.W_600, color=ft.colors.CYAN_200)
@@ -640,6 +664,20 @@ def main(page: ft.Page):
             elif net_bias < 0: net_flow_txt.color = ft.colors.RED_400
             else: net_flow_txt.color = ft.colors.GREY_400
 
+            # --- REFRESH IN-MEMORY AGGRESSOR TRACKING CONTROLLERS ---
+            c_ask, c_bid, p_ask, p_bid = m['aggr_call_ask'], m['aggr_call_bid'], m['aggr_put_ask'], m['aggr_put_bid']
+            call_ask_hit_txt.value = f"{c_ask / 1000000.0:.1f}M"
+            call_bid_hit_txt.value = f"{c_bid / 1000000.0:.1f}M"
+            put_ask_hit_txt.value = f"{p_ask / 1000000.0:.1f}M"
+            put_bid_hit_txt.value = f"{p_bid / 1000000.0:.1f}M"
+            
+            # Formulate net aggressive premium direction context
+            net_aggr_premium = (c_ask + p_bid) - (c_bid + p_ask)
+            aggr_net_bias_txt.value = fmt_signed_flow(net_aggr_premium)
+            if net_aggr_premium > 0: aggr_net_bias_txt.color = ft.colors.GREEN_400
+            elif net_aggr_premium < 0: aggr_net_bias_txt.color = ft.colors.RED_400
+            else: aggr_net_bias_txt.color = ft.colors.GREY_400
+
             iv_val, rv_val = m['implied_vol'], m['realized_vol']
             iv_metric_txt.value = f"{iv_val:.1f}%"
             rv_metric_txt.value = f"{rv_val:.1f}%"
@@ -741,11 +779,9 @@ def main(page: ft.Page):
                 curr_y += 10.0
             iv_left_axis.labels = y_iv_labels
             
-            # --- MODIFIED: SPLIT VELOCITY RANKINGS INTO INDIVIDUAL ROW POSITIONS ---
             sorted_velocity_items = sorted(m['chart_data'], key=lambda x: x['velocity_ratio'], reverse=True)
             top_anomalies = [item for item in sorted_velocity_items if item['velocity_ratio'] > 0][:3]
             
-            # Reset row text views defaults
             anomaly_txt_1st.value = "No dynamic target detected"
             anomaly_txt_2nd.value = "--"
             anomaly_txt_3rd.value = "--"
@@ -837,7 +873,6 @@ def main(page: ft.Page):
         create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
 
-        # --- MODIFIED: SEPARATED ANOMALIES DASHBOARD DIRECTLY INTO THREE STACKED ROWS ---
         create_section_header("INTRADAY GAMMA VELOCITY PROFILE (VOLUME / OI)"),
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
             velocity_bar_chart,
@@ -865,8 +900,21 @@ def main(page: ft.Page):
         
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
+        
+        # --- FIXED: EXPANDED 24H ORDER FLOW ANALYSIS CARD TO EMBED LIVE AGGRESSOR TRACKING METRICS ---
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Net Call Inflows", inflows_call_txt), ui_row_item("Net Put Inflows", outflows_put_txt), ui_row_item("Net Premium Bias", net_flow_txt)]))),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([
+            ui_row_item("Net Call Inflows", inflows_call_txt), 
+            ui_row_item("Net Put Inflows", outflows_put_txt), 
+            ui_row_item("Net Premium Bias", net_flow_txt),
+            ft.Divider(height=10, color=ft.colors.GREY_800),
+            ft.Text("BLOCK TRADE AGGRESSOR TRACKING (BID vs ASK)", size=11, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_500),
+            ui_row_item("↳ Call Aggressor Buys (Hit Ask)", call_ask_hit_txt),
+            ui_row_item("↳ Call Aggressor Sells (Hit Bid)", call_bid_hit_txt),
+            ui_row_item("↳ Put Aggressor Buys (Hit Ask)", put_ask_hit_txt),
+            ui_row_item("↳ Put Aggressor Sells (Hit Bid)", put_bid_hit_txt),
+            ui_row_item("↳ Net Aggressor Premium Bias", aggr_net_bias_txt)
+        ]))),
 
         create_section_header("VOLATILITY VARIANCE ANALYSIS (10D)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
