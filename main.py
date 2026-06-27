@@ -341,7 +341,6 @@ def fetch_deribit_gex(currency="BTC"):
 
     realized_vol_10d_val = calculate_realized_vol_10d(currency)
 
-    # --- NEW: INTRADAY TREND COHESION SCORE CALCULATION MATRIX ---
     pt_gex = (1.5 if net_gex_1m >= 0 else 0.0) + (1.5 if net_gex_3d >= 0 else 0.0)
     pt_flow = 3.0 if net_flow_bias > 0 else 0.0
     pt_price = (1.5 if spot_price > flip_level else 0.0) + (1.5 if spot_price > max_pain_level else 0.0)
@@ -415,12 +414,12 @@ def main(page: ft.Page):
     rv_metric_txt = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600)
     vol_variance_txt = ft.Text("0.0% (Neutral)", size=14, weight=ft.FontWeight.BOLD)
 
-    # --- NEW: COHESION UI ELEMENT CONTROLLERS ---
-    cohesion_main_txt = ft.Text("0.0 / 12 (Neutral)", size=14, weight=ft.FontWeight.BOLD)
-    gex_component_txt = ft.Text("0.0 / 3.0", size=14, color=ft.colors.GREY_400)
-    flow_component_txt = ft.Text("0.0 / 3.0", size=14, color=ft.colors.GREY_400)
-    price_component_txt = ft.Text("0.0 / 3.0", size=14, color=ft.colors.GREY_400)
-    vol_component_txt = ft.Text("0.0 / 3.0", size=14, color=ft.colors.GREY_400)
+    # --- MODIFIED: REMOVED MAXIMUM ACHIEVABLE BOUNDS AND PREFIX SYMBOLS FROM TRACKERS ---
+    cohesion_main_txt = ft.Text("0.0 (Neutral)", size=14, weight=ft.FontWeight.BOLD)
+    gex_component_txt = ft.Text("0.0", size=14, color=ft.colors.GREY_400)
+    flow_component_txt = ft.Text("0.0", size=14, color=ft.colors.GREY_400)
+    price_component_txt = ft.Text("0.0", size=14, color=ft.colors.GREY_400)
+    vol_component_txt = ft.Text("0.0", size=14, color=ft.colors.GREY_400)
 
     gex_bar_chart_3d = ft.BarChart(bar_groups=[], bottom_axis=net_axis_3d, 
                                    horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
@@ -562,27 +561,27 @@ def main(page: ft.Page):
                 vol_variance_txt.value = f"{variance_spread:+.1f}% (Sideways Risk)"
                 vol_variance_txt.color = ft.colors.RED_400
 
-            # --- FIXED: RE-BIND DYNAMIC DATA FIELDS FOR THE COHESION ENGINE ---
+            # --- MODIFIED: ADJUSTED ASSIGNMENT STRINGS TO DISPLAY ONLY THE RAW RESULTS ---
             scr = m['trend_score']
-            gex_component_txt.value = f"{m['pt_gex']:.1f} / 3.0"
-            flow_component_txt.value = f"{m['pt_flow']:.1f} / 3.0"
-            price_component_txt.value = f"{m['pt_price']:.1f} / 3.0"
-            vol_component_txt.value = f"{m['pt_vol']:.1f} / 3.0"
+            gex_component_txt.value = f"{m['pt_gex']:.1f}"
+            flow_component_txt.value = f"{m['pt_flow']:.1f}"
+            price_component_txt.value = f"{m['pt_price']:.1f}"
+            vol_component_txt.value = f"{m['pt_vol']:.1f}"
             
             if scr <= 3.5:
-                cohesion_main_txt.value = f"{scr:.1f} / 12.0 (Strong Bearish)"
+                cohesion_main_txt.value = f"{scr:.1f} (Strong Bearish)"
                 cohesion_main_txt.color = ft.colors.RED_700
             elif scr <= 5.5:
-                cohesion_main_txt.value = f"{scr:.1f} / 12.0 (Mild Bearish)"
+                cohesion_main_txt.value = f"{scr:.1f} (Mild Bearish)"
                 cohesion_main_txt.color = ft.colors.RED_400
             elif scr <= 6.5:
-                cohesion_main_txt.value = f"{scr:.1f} / 12.0 (Neutral)"
+                cohesion_main_txt.value = f"{scr:.1f} (Neutral)"
                 cohesion_main_txt.color = ft.colors.GREY_400
             elif scr <= 8.5:
-                cohesion_main_txt.value = f"{scr:.1f} / 12.0 (Mild Bullish)"
+                cohesion_main_txt.value = f"{scr:.1f} (Mild Bullish)"
                 cohesion_main_txt.color = ft.colors.GREEN_300
             else:
-                cohesion_main_txt.value = f"{scr:.1f} / 12.0 (Strong Bullish)"
+                cohesion_main_txt.value = f"{scr:.1f} (Strong Bullish)"
                 cohesion_main_txt.color = ft.colors.GREEN_600
             
             time_now = datetime.now(timezone.utc)
@@ -713,7 +712,7 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt)]))) ,
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt)]))),
 
         create_section_header("VOLATILITY VARIANCE ANALYSIS (10D)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
@@ -722,14 +721,14 @@ def main(page: ft.Page):
             ui_row_item("IV - RV Variation", vol_variance_txt)
         ]))),
 
-        # --- FIXED: INTRADAY TREND COHESION CARD INSERTED EXACTLY BELOW THE VOLATILITY SPREAD ---
+        # --- MODIFIED: INTRADAY TREND COHESION ROW ORDERS FLIPPED AND CLEANED UP ---
         create_section_header("INTRADAY TREND COHESION SCORE"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
-            ui_row_item("Unified Cohesion Index", cohesion_main_txt),
-            ui_row_item("↳ GEX Regime Component", gex_component_txt),
-            ui_row_item("↳ Options Tape Flow Component", flow_component_txt),
-            ui_row_item("↳ Price Structure Component", price_component_txt),
-            ui_row_item("↳ Volatility Setup Component", vol_component_txt)
+            ui_row_item("GEX Regime Component", gex_component_txt),
+            ui_row_item("Options Tape Flow Component", flow_component_txt),
+            ui_row_item("Price Structure Component", price_component_txt),
+            ui_row_item("Volatility Setup Component", vol_component_txt),
+            ui_row_item("ITC Score (12)", cohesion_main_txt) # Moved to last row with cleaned names and font sizing
         ]))),
 
         create_section_header("LARGE LOT BLOCKS DETECTOR"),
