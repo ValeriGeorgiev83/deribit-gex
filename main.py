@@ -78,7 +78,6 @@ def fetch_deribit_gex(currency="BTC"):
     base_df = pd.DataFrame(parsed_options)
     if base_df.empty: return None
     
-    # MODIFIED: Shifted macro horizon threshold from 90 days down to 30 days
     df_1m = base_df[base_df['days_to_expiry'] <= 30.0]
     df_3d = base_df[base_df['days_to_expiry'] <= 3.0]
     if df_3d.empty: df_3d = df_1m
@@ -100,6 +99,15 @@ def fetch_deribit_gex(currency="BTC"):
     net_gex_3d = call_gex_3d + put_gex_3d
     total_abs_gex_3d = abs(call_gex_3d) + abs(put_gex_3d)
     call_weight_pct_3d = (abs(call_gex_3d) / total_abs_gex_3d * 100) if total_abs_gex_3d > 0 else 50.0
+
+    # --- EXTRACTION: TOP 2 CALL & PUT WALLS FROM THE 3D POOL ---
+    call_walls_3d = call_df_3d.groupby('strike')['gex'].sum().abs().sort_values(ascending=False).head(2)
+    put_walls_3d = put_df_3d.groupby('strike')['gex'].sum().abs().sort_values(ascending=False).head(2)
+
+    c1_level = call_walls_3d.index[0] if len(call_walls_3d) >= 1 else spot_price
+    c2_level = call_walls_3d.index[1] if len(call_walls_3d) >= 2 else spot_price
+    p1_level = put_walls_3d.index[0] if len(put_walls_3d) >= 1 else spot_price
+    p2_level = put_walls_3d.index[1] if len(put_walls_3d) >= 2 else spot_price
     
     # --- 7D EXPIRATION ENGINE FOR IV SKEW ---
     df_7d = base_df[base_df['days_to_expiry'] <= 7.0]
@@ -264,7 +272,8 @@ def fetch_deribit_gex(currency="BTC"):
         "max_pain": max_pain_level, "flip": flip_level, "breakout": breakout_price, 
         "resistance": resistance_level, "support": support_level, "call_inflow": total_accumulated_call_flow, 
         "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "chart_data": chart_matrix,
-        "skew_25d": skew_25d_val
+        "skew_25d": skew_25d_val,
+        "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level
     }
 
 def fmt_gex(val):
@@ -303,6 +312,12 @@ def main(page: ft.Page):
     net_gex_txt_3d = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
     weight_txt_3d = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_800)
     
+    # --- ADDED: 3D CONCENTRATION LEVEL DATA INTERFACE ROW TERMINALS ---
+    c1_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.RED_400)
+    c2_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.RED_400)
+    p1_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.RED_400)
+    p2_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.RED_400)
+
     skew_25d_txt = ft.Text("0.00% (Neutral)", size=14, weight=ft.FontWeight.BOLD)
     
     pain_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600)
@@ -399,6 +414,12 @@ def main(page: ft.Page):
             net_gex_txt_3d.value = fmt_gex(net_3d)
             net_gex_txt_3d.color = ft.colors.ORANGE_400 if net_3d >= 0 else ft.colors.BLUE_400
             weight_txt_3d.value = f"{m['call_weight_3d']:.1f}%"
+
+            # --- UPDATED: RE-ASSIGN DATA STRINGS FOR THE SPECIFIED STRIKE WALLS ---
+            c1_txt.value = f"${m['c1_wall']:,.0f}"
+            c2_txt.value = f"${m['c2_wall']:,.0f}"
+            p1_txt.value = f"${m['p1_wall']:,.0f}"
+            p2_txt.value = f"${m['p2_wall']:,.0f}"
             
             skew_val = m['skew_25d']
             if skew_val <= 0.4 and skew_val >= -0.4:
@@ -520,10 +541,17 @@ def main(page: ft.Page):
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (3D)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_3d)),
         
+        # --- FIXED: ADDED THE 4 DYNAMIC CONCENTRATION WALL ROWS UNDER THE 3D ABS CHART ---
         create_section_header("ABS GAMMA EXPOSURE BY STRIKE (3D)"),
-        ft.Card(content=ft.Container(padding=15, content=abs_gex_chart_3d)),
+        ft.Card(content=ft.Container(padding=15, content=ft.Column([
+            abs_gex_chart_3d,
+            ft.Container(height=10),
+            ui_row_item("Call Concetration (C1)", c1_txt),
+            ui_row_item("Call Concetration (C2)", c2_txt),
+            ui_row_item("Put Concetration (P1)", p1_txt),
+            ui_row_item("Put Concetration (P2)", p2_txt)
+        ]))),
 
-        # MODIFIED: Re-labeled section headers to reflect the new 1-month horizon
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (1M)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_1m)),
 
