@@ -245,7 +245,6 @@ def fetch_deribit_gex(currency="BTC"):
             timestamp_ms = trade.get('timestamp', int(now.timestamp() * 1000))
             iv_trade = float(trade.get('iv', 50)) / 100.0
 
-            # Compute Black-Scholes Delta for accurate NDF Drift sizing
             try:
                 t_trade = max(days_to_expiry, 0.01) / 365.0
                 d1_trade = (math.log(trade_index_price / strike) + (0.5 * (iv_trade ** 2)) * t_trade) / (iv_trade * math.sqrt(t_trade))
@@ -253,10 +252,9 @@ def fetch_deribit_gex(currency="BTC"):
             except Exception:
                 trade_delta = 0.5 if option_type == 'C' else -0.5
 
-            # Calculate Net Delta Flow: Delta * Fiat Premium Exposure
             trade_ndf = trade_delta * fiat_notional_value
             if direction != 'buy':
-                trade_ndf = -trade_ndf # Flip sign if execution hits the dealer's bid side
+                trade_ndf = -trade_ndf
 
             net_delta_premium_drift += trade_ndf
 
@@ -282,7 +280,6 @@ def fetch_deribit_gex(currency="BTC"):
     time_now = datetime.now(timezone.utc)
     current_ts = time_now.strftime("%m-%d %H:%M")
 
-    # --- HISTORICAL 24H MEMORY SNAPS ENGINE ---
     try:
         last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
         is_duplicate = False
@@ -294,7 +291,7 @@ def fetch_deribit_gex(currency="BTC"):
                 "timestamp": current_ts, 
                 "call_flow": round(net_call_fiat_flow, 2), 
                 "put_flow": round(net_put_fiat_flow, 2),
-                "ndf_drift": round(net_delta_premium_drift, 2) # Bind NDF inside the existing historical record pipeline
+                "ndf_drift": round(net_delta_premium_drift, 2)
             }
             redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
         all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
@@ -314,7 +311,6 @@ def fetch_deribit_gex(currency="BTC"):
     total_accumulated_put_flow = sum(f["put_flow"] for f in valid_flow_records) if valid_flow_records else net_put_fiat_flow
     net_flow_bias = total_accumulated_call_flow + (total_accumulated_put_flow * -1)
     
-    # Calculate rolling cumulative premium drift sum
     total_cumulative_ndf_drift = sum(f.get("ndf_drift", 0.0) for f in valid_flow_records) if valid_flow_records else net_delta_premium_drift
 
     try:
@@ -412,7 +408,7 @@ def fetch_deribit_gex(currency="BTC"):
         "implied_vol": atm_iv, "realized_vol": realized_vol_10d_val,
         "trend_score": total_cohesion_points, "pt_gex": pt_gex, "pt_flow": pt_flow, "pt_price": pt_price, "pt_vol": pt_vol,
         "net_charm_flow": hourly_charm_rehedge_contracts,
-        "ndf_drift_total": total_cumulative_ndf_drift # Return NDF values cleanly to dashboard state binding loop
+        "ndf_drift_total": total_cumulative_ndf_drift
     }
 
 def fmt_gex(val):
@@ -479,7 +475,6 @@ def main(page: ft.Page):
     charm_flow_metric_txt = ft.Text("0.0 BTC/hr", size=14, weight=ft.FontWeight.BOLD)
     charm_bias_txt = ft.Text("Neutral", size=14, weight=ft.FontWeight.BOLD)
 
-    # --- NEW: NDF DRIFT INTERFACE CONTROL BINDINGS ---
     ndf_drift_metric_txt = ft.Text("$0.0M", size=14, weight=ft.FontWeight.BOLD)
     ndf_structural_signal_txt = ft.Text("Neutral Absorption", size=14, weight=ft.FontWeight.BOLD)
 
@@ -656,7 +651,6 @@ def main(page: ft.Page):
                 charm_bias_txt.value = "Stable Neutral"
                 charm_bias_txt.color = ft.colors.GREY_400
 
-            # --- FIXED: BIND NDF DATA TO DISPLAY CONTAINER FIELDS AT 14PX TEXT SIZES ---
             drift_val = m['ndf_drift_total']
             ndf_drift_metric_txt.value = fmt_signed_flow(drift_val)
             if drift_val > 0:
@@ -823,11 +817,10 @@ def main(page: ft.Page):
             ui_row_item("Dealer Bias", charm_bias_txt)
         ]))),
 
-        # --- FIXED: NDF CARD INSERTED DIRECTLY AFTER CEX TRACKER AND BEFORE THE CANVAS ---
         create_section_header("CUMULATIVE DELTA PREMIUM DRIFT (NDF)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("24H Net Delta Flow Drift", ndf_drift_metric_txt),
-            ui_row_item("Structural Tape Signal", ndf_structural_signal_txt)
+            ui_row_item("Tape", ndf_structural_signal_txt) # FIXED: Renamed row label directly to "Tape"
         ]))),
 
         create_section_header("LARGE LOT BLOCKS DETECTOR"),
