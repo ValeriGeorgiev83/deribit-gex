@@ -14,10 +14,12 @@ redis = Redis(
 )
 REDIS_KEY = "deribit_gex_3d_history"
 REDIS_FLOW_KEY = "deribit_flow_24h_history"
+REDIS_WHALE_KEY = "deribit_whale_blocks_24h"
 MAX_HISTORY_POINTS = 3500
+WHALE_THRESHOLD_USD = 250000.0
 
 def fetch_deribit_gex(currency="BTC"):
-    """Fetches and calculates GEX, market flow, and IV Skew metrics from Deribit."""
+    """Fetches and calculates GEX, market flow, whale blocks, and IV Skew metrics from Deribit."""
     try:
         idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
         idx_res = requests.get(idx_url).json()
@@ -100,7 +102,6 @@ def fetch_deribit_gex(currency="BTC"):
     total_abs_gex_3d = abs(call_gex_3d) + abs(put_gex_3d)
     call_weight_pct_3d = (abs(call_gex_3d) / total_abs_gex_3d * 100) if total_abs_gex_3d > 0 else 50.0
 
-    # --- EXTRACTION: TOP 2 CALL & PUT WALLS FROM THE 3D POOL ---
     call_walls_3d = call_df_3d.groupby('strike')['gex'].sum().abs().sort_values(ascending=False).head(2)
     put_walls_3d = put_df_3d.groupby('strike')['gex'].sum().abs().sort_values(ascending=False).head(2)
 
@@ -111,29 +112,23 @@ def fetch_deribit_gex(currency="BTC"):
     
     # --- 7D EXPIRATION ENGINE FOR IV SKEW ---
     df_7d = base_df[base_df['days_to_expiry'] <= 7.0]
-    
     skew_25d_val = 0.0
     if not df_7d.empty:
         calls_7d = df_7d[df_7d['type'] == 'C']
         puts_7d = df_7d[df_7d['type'] == 'P']
-        
         c_25d = calls_7d.loc[(calls_7d['strike'] - spot_price * 1.05).abs().idxmin()] if not calls_7d.empty else None
         p_25d = puts_7d.loc[(puts_7d['strike'] - spot_price * 0.95).abs().idxmin()] if not puts_7d.empty else None
-        
         if c_25d is not None and p_25d is not None:
             skew_25d_val = p_25d['iv'] - c_25d['iv']
 
     strikes_3d = sorted(df_3d['strike'].unique())
     min_pain = float('inf')
     max_pain_level = spot_price
-    
     for s in strikes_3d:
         pain = 0
         for _, row in df_3d.iterrows():
-            if row['type'] == 'C' and row['strike'] < s: 
-                pain += (s - row['strike']) * row['oi']
-            elif row['type'] == 'P' and row['strike'] > s: 
-                pain += (row['strike'] - s) * row['oi']
+            if row['type'] == 'C' and row['strike'] < s: pain += (s - row['strike']) * row['oi']
+            elif row['type'] == 'P' and row['strike'] > s: pain += (row['strike'] - s) * row['oi']
         if pain < min_pain:
             min_pain = pain
             max_pain_level = s
@@ -148,7 +143,6 @@ def fetch_deribit_gex(currency="BTC"):
         for i in range(len(buckets_list) - 1):
             b1, b2 = buckets_list[i], buckets_list[i+1]
             g1, g2 = macro_grouped.loc[b1], macro_grouped.loc[b2]
-            
             if (g1 < 0 and g2 > 0) or (g1 > 0 and g2 < 0):
                 flip_level = b1 - g1 * (b2 - b1) / (g2 - g1)
                 flip_level = round(flip_level)
@@ -160,9 +154,11 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # --- LIVE OPTION TAPE LOGIC ---
+    # --- LIVE OPTION TAPE LOGIC + WHALE BLOCK FILTERING ---
     net_call_fiat_flow = 0.0
     net_put_fiat_flow = 0.0
+    detected_whale_blocks = []
+    
     try:
         trades_url = f"https://www.deribit.com/api/v2/public/get_last_trades_by_currency?currency={currency}&kind=option&count=1000"
         trades_res = requests.get(trades_url).json()
@@ -170,76 +166,128 @@ def fetch_deribit_gex(currency="BTC"):
         
         for trade in trades_list:
             ins_name = trade.get('instrument_name', '')
+            parts = ins_name.split('-')
+            if len(parts) < 4: continue
+            
+            expiry_str = parts[1]
+            strike = float(parts[2])
+            option_type = parts[3]
+            
+            try:
+                expiry_dt = datetime.strptime(expiry_str, "%d%b%y").replace(tzinfo=timezone.utc).replace(hour=8, minute=0)
+                days_to_expiry = (expiry_dt - now).total_seconds() / 86400.0
+            except Exception:
+                continue
+                
             direction = trade.get('direction', 'buy')
             amount = float(trade.get('amount', 0))
             trade_index_price = float(trade.get('index_price', spot_price))
             fiat_notional_value = amount * trade_index_price
+            trade_id = str(trade.get('trade_id', ''))
+            timestamp_ms = trade.get('timestamp', int(now.timestamp() * 1000))
+
             if ins_name.endswith('-C'):
                 if direction == 'buy': net_call_fiat_flow += fiat_notional_value
                 else: net_call_fiat_flow -= fiat_notional_value
             elif ins_name.endswith('-P'):
                 if direction == 'buy': net_put_fiat_flow -= fiat_notional_value
                 else: net_put_fiat_flow += fiat_notional_value
+                
+            # Whale block criterion check: Expiry <= 3 Days AND Value >= $250k
+            if days_to_expiry <= 3.0 and fiat_notional_value >= WHALE_THRESHOLD_USD:
+                detected_whale_blocks.append({
+                    "trade_id": trade_id,
+                    "timestamp_epoch": timestamp_ms / 1000.0,
+                    "strike": strike,
+                    "type": option_type,
+                    "direction": direction,
+                    "fiat_value": fiat_notional_value
+                })
     except Exception as ex:
         print(f"Option Tape Fetch Interrupted: {ex}")
 
     time_now = datetime.now(timezone.utc)
     current_ts = time_now.strftime("%m-%d %H:%M")
 
-    # --- TIME-BASED HISTORICAL LOG CLEAN-UP ENGINE ---
+    # --- SAVE snap TOTAL ORDER FLOW SNAPSHOTS ---
     try:
         last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
         is_duplicate = False
         if last_logged_element:
             last_logged_data = json.loads(last_logged_element)
-            if last_logged_data.get("timestamp") == current_ts:
-                is_duplicate = True
+            if last_logged_data.get("timestamp") == current_ts: is_duplicate = True
         if not is_duplicate:
-            flow_snapshot = {
-                "timestamp": current_ts,
-                "call_flow": round(net_call_fiat_flow, 2),
-                "put_flow": round(net_put_fiat_flow, 2)
-            }
+            flow_snapshot = {"timestamp": current_ts, "call_flow": round(net_call_fiat_flow, 2), "put_flow": round(net_put_fiat_flow, 2)}
             redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
         all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
-        valid_flow_records = []
-        records_to_remove_count = 0
+        valid_flow_records, records_to_remove_count = [], 0
         for record in all_flow_records:
             f_data = json.loads(record)
-            ts_str = f_data['timestamp']
-            rec_time = datetime.strptime(f"{time_now.year}-{ts_str}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+            rec_time = datetime.strptime(f"{time_now.year}-{f_data['timestamp']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
             if rec_time > time_now: rec_time = rec_time.replace(year=time_now.year - 1)
-            if (time_now - rec_time).total_seconds() <= 86400.0:
-                valid_flow_records.append(f_data)
+            if (time_now - rec_time).total_seconds() <= 86400.0: valid_flow_records.append(f_data)
             else: records_to_remove_count += 1
-        if records_to_remove_count > 0:
-            redis.ltrim(REDIS_FLOW_KEY, records_to_remove_count, -1)
+        if records_to_remove_count > 0: redis.ltrim(REDIS_FLOW_KEY, records_to_remove_count, -1)
     except Exception as ex:
-        print(f"Cloud Flow Lifecycle Eviction Guard Triggered: {ex}")
+        print(f"Flow Eviction Fail: {ex}")
         valid_flow_records = []
 
-    total_accumulated_call_flow = 0.0
-    total_accumulated_put_flow = 0.0
-    if valid_flow_records:
-        for f_data in valid_flow_records:
-            total_accumulated_call_flow += f_data["call_flow"]
-            total_accumulated_put_flow += f_data["put_flow"]
-    else:
-        total_accumulated_call_flow = net_call_fiat_flow
-        total_accumulated_put_flow = net_put_fiat_flow
-
+    total_accumulated_call_flow = sum(f["call_flow"] for f in valid_flow_records) if valid_flow_records else net_call_fiat_flow
+    total_accumulated_put_flow = sum(f["put_flow"] for f in valid_flow_records) if valid_flow_records else net_put_fiat_flow
     net_flow_bias = total_accumulated_call_flow + (total_accumulated_put_flow * -1)
-    
+
+    # --- CLOUD WHALE BLOCKS DATABASE MANAGEMENT (EVICTION SAFEGUARDED) ---
+    try:
+        if detected_whale_blocks:
+            existing_whale_records = redis.lrange(REDIS_WHALE_KEY, 0, -1)
+            known_ids = set()
+            for r in existing_whale_records:
+                try: known_ids.add(json.loads(r)["trade_id"])
+                except Exception: pass
+            
+            for block in detected_whale_blocks:
+                if block["trade_id"] not in known_ids:
+                    redis.rpush(REDIS_WHALE_KEY, json.dumps(block))
+
+        all_whale_records = redis.lrange(REDIS_WHALE_KEY, 0, -1)
+        valid_whale_blocks, whale_remove_count = [], 0
+        current_time_epoch = time_now.timestamp()
+        
+        for r in all_whale_records:
+            b_data = json.loads(r)
+            if (current_time_epoch - b_data["timestamp_epoch"]) <= 86400.0:
+                valid_whale_blocks.append(b_data)
+            else:
+                whale_remove_count += 1
+        if whale_remove_count > 0:
+            redis.ltrim(REDIS_WHALE_KEY, whale_remove_count, -1)
+    except Exception as ex:
+        print(f"Cloud Whale Engine Interrupt: {ex}")
+        valid_whale_blocks = []
+
+    # --- WHALE LOTS MATH MATRIX MATRIX ENGINE ---
     center_spot_1k = round(spot_price / 1000.0) * 1000
     lower_bound = center_spot_1k - 8000
     upper_bound = center_spot_1k + 8000
-    
-    # --- 3D MATRIX RANGE FILTER ---
+    target_buckets = list(range(int(lower_bound), int(upper_bound) + 1000, 1000))
+
+    whale_matrix = {b: {"bullish": 0.0, "bearish": 0.0} for b in target_buckets}
+    for b_trade in valid_whale_blocks:
+        rounded_strike = round(b_trade["strike"] / 1000.0) * 1000
+        if rounded_strike in whale_matrix:
+            opt_type = b_trade["type"]
+            side = b_trade["direction"]
+            val = b_trade["fiat_value"]
+            
+            if (opt_type == "C" and side == "buy") or (opt_type == "P" and side == "sell"):
+                whale_matrix[rounded_strike]["bullish"] += val
+            elif (opt_type == "C" and side == "sell") or (opt_type == "P" and side == "buy"):
+                whale_matrix[rounded_strike]["bearish"] += val
+
     df_chart_range_3d = df_3d[(df_3d['strike'] >= lower_bound) & (df_3d['strike'] <= upper_bound)].copy()
     df_chart_range_3d['strike_bucket'] = df_chart_range_3d['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     bucket_data_3d = df_chart_range_3d.groupby('strike_bucket').agg({'gex': 'sum'})
 
-    # --- 1M MATRIX RANGE FILTER ---
     df_chart_range_1m = df_1m[(df_1m['strike'] >= lower_bound) & (df_1m['strike'] <= upper_bound)].copy()
     df_chart_range_1m['strike_bucket'] = df_chart_range_1m['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     bucket_data_1m = df_chart_range_1m.groupby('strike_bucket').agg({'gex': 'sum'})
@@ -250,9 +298,7 @@ def fetch_deribit_gex(currency="BTC"):
         df_7d_range['strike_bucket'] = df_7d_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
         bucket_iv_map = df_7d_range.groupby('strike_bucket')['iv'].mean().to_dict()
 
-    target_buckets = list(range(int(lower_bound), int(upper_bound) + 1000, 1000))
     chart_matrix = []
-    
     for idx, b_strike in enumerate(target_buckets):
         gex_3d_val = bucket_data_3d.get('gex', {}).get(b_strike, 0.0)
         gex_1m_val = bucket_data_1m.get('gex', {}).get(b_strike, 0.0)
@@ -262,7 +308,9 @@ def fetch_deribit_gex(currency="BTC"):
             "index": idx, "strike": b_strike, 
             "gex_3d": gex_3d_val, "abs_gex_3d": abs(gex_3d_val),
             "gex_1m": gex_1m_val, "abs_gex_1m": abs(gex_1m_val),
-            "iv_skew": iv_skew_val
+            "iv_skew": iv_skew_val,
+            "whale_bullish": whale_matrix[b_strike]["bullish"],
+            "whale_bearish": -whale_matrix[b_strike]["bearish"] # Sided cleanly below zero mark line
         })
 
     return {
@@ -272,8 +320,7 @@ def fetch_deribit_gex(currency="BTC"):
         "max_pain": max_pain_level, "flip": flip_level, "breakout": breakout_price, 
         "resistance": resistance_level, "support": support_level, "call_inflow": total_accumulated_call_flow, 
         "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "chart_data": chart_matrix,
-        "skew_25d": skew_25d_val,
-        "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level
+        "skew_25d": skew_25d_val, "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level
     }
 
 def fmt_gex(val):
@@ -283,8 +330,7 @@ def fmt_gex(val):
 
 def fmt_signed_flow(val):
     sign = "+" if val > 0 else ""
-    millions_val = val / 1000000.0
-    return f"{sign}{millions_val:,.1f}M"
+    return f"{sign}{val / 1000000.0:,.1f}M"
 
 def main(page: ft.Page):
     page.title = "DERIBIT GEX DASHBOARD"
@@ -296,6 +342,7 @@ def main(page: ft.Page):
     abs_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
+    whale_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     
     iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_left_axis = ft.ChartAxis(labels=[], labels_size=42)
@@ -312,14 +359,12 @@ def main(page: ft.Page):
     net_gex_txt_3d = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
     weight_txt_3d = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_800)
     
-    # --- MODIFIED: Adjusted Call Concentration labels to render green ---
     c1_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREEN_400)
     c2_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREEN_400)
     p1_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.RED_400)
     p2_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.RED_400)
 
     skew_25d_txt = ft.Text("0.00% (Neutral)", size=14, weight=ft.FontWeight.BOLD)
-    
     pain_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600)
     flip_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.ORANGE_400)
     breakout_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_ACCENT)
@@ -356,6 +401,14 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
+    # --- NEW: WHALE LOT BAR CHART CANVAS CONFIGURATION ARRAYS ---
+    whale_bar_chart = ft.BarChart(
+        bar_groups=[], bottom_axis=whale_bottom_axis,
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        animate=True, interactive=True, height=260
+    )
+
     iv_skew_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=iv_bottom_axis,
         left_axis=iv_left_axis,
@@ -375,7 +428,6 @@ def main(page: ft.Page):
         if m:
             spot_txt.value = f"${m['spot']:,.2f}"
             
-            # --- 1M OPTIONS PROFILE MAPS ---
             c_1m, p_1m = m['call_gex_1m'], m['put_gex_1m']
             if c_1m >= 0:
                 call_gex_txt_1m.value = f"{fmt_gex(c_1m)} (Bearish)"
@@ -395,7 +447,6 @@ def main(page: ft.Page):
             net_gex_txt_1m.color = ft.colors.GREEN_400 if m['net_gex_1m'] >= 0 else ft.colors.RED_400
             weight_txt_1m.value = f"{m['call_weight_1m']:.1f}%"
 
-            # --- 3D OPTIONS PROFILE MAPS ---
             c_3d, p_3d, net_3d = m['call_gex_3d'], m['put_gex_3d'], m['net_gex_3d']
             if c_3d >= 0:
                 call_gex_txt_3d.value = f"{fmt_gex(c_3d)} (Bearish)"
@@ -437,9 +488,7 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}"
             
-            # --- 24H ACCUMULATED ORDER FLOW ANALYSIS CARD ---
             c_flow, p_flow, net_bias = m['call_inflow'], m['put_inflow'], m['net_flow']
-            
             inflows_call_txt.value = fmt_signed_flow(c_flow)
             if c_flow > 0: inflows_call_txt.color = ft.colors.GREEN_400
             elif c_flow < 0: inflows_call_txt.color = ft.colors.RED_400
@@ -455,7 +504,7 @@ def main(page: ft.Page):
             elif net_bias < 0: net_flow_txt.color = ft.colors.RED_400
             else: net_flow_txt.color = ft.colors.GREY_400
             
-            # --- REDIS LOGGING ENGINE ---
+            # --- REDIS snap REFRESH SNAPSHOT ENGINE ---
             time_now = datetime.now(timezone.utc)
             current_refresh_ts = time_now.strftime("%m-%d %H:%M")
             try:
@@ -473,8 +522,8 @@ def main(page: ft.Page):
                     redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
             except Exception as ex: print(f"Cloud Logging Interrupted: {ex}")
             
-            # --- BAR CHARTS & IV SKEW RENDERING LOOPS ---
-            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], float('inf'), -1
+            # --- BAR CHARTS Rendering Loops ---
+            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist: min_dist, spot_index = dist, item['index']
@@ -500,12 +549,22 @@ def main(page: ft.Page):
             for item in m['chart_data']:
                 strike_val, is_spot = item['strike'], (item['index'] == spot_index)
                 val_3d, abs_3d, val_1m, abs_1m, iv_val = item['gex_3d'], item['abs_gex_3d'], item['gex_1m'], item['abs_gex_1m'], item['iv_skew']
-                
+                w_bull, w_bear = item['whale_bullish'], item['whale_bearish']
+
                 groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color=ft.colors.GREEN_400 if val_3d >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
                 groups_abs_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_3d, color=ft.colors.YELLOW, width=12, border_radius=2)]))
                 groups_net_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_1m, color="#bab7ab" if val_1m >= 0 else "#1661b4", width=12, border_radius=2)]))
                 groups_abs_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_1m, color="#ab47bc", width=12, border_radius=2)]))
                 
+                # FIXED: Rendering stacked bullish/bearish blocks on the same strike index
+                groups_whale.append(ft.BarChartGroup(
+                    x=item['index'],
+                    bar_rods=[
+                        ft.BarChartRod(from_y=0, to_y=w_bull, color=ft.colors.GREEN_400, width=10, border_radius=1),
+                        ft.BarChartRod(from_y=0, to_y=w_bear, color=ft.colors.RED_400, width=10, border_radius=1)
+                    ]
+                ))
+
                 iv_bar_groups.append(ft.BarChartGroup(
                     x=item['index'],
                     bar_rods=[ft.BarChartRod(from_y=floor_y, to_y=iv_val if iv_val > 0 else floor_y, color=ft.colors.ORANGE_700, width=12, border_radius=2)]
@@ -517,16 +576,18 @@ def main(page: ft.Page):
             
             gex_bar_chart_3d.bar_groups = groups_net_3d
             net_axis_3d.labels = new_labels
-            
             abs_gex_chart_3d.bar_groups = groups_abs_3d
             abs_axis_3d.labels = new_labels
 
             gex_bar_chart_1m.bar_groups = groups_net_1m
             net_axis_1m.labels = list(new_labels)
-
             abs_gex_chart_1m.bar_groups = groups_abs_1m
             abs_axis_1m.labels = list(new_labels)
             
+            # Update whale canvas bindings
+            whale_bar_chart.bar_groups = groups_whale
+            whale_bottom_axis.labels = list(new_labels)
+
             iv_skew_bar_chart.bar_groups = iv_bar_groups
             iv_bottom_axis.labels = list(new_labels)
             
@@ -575,7 +636,15 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt)])))
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt)]))),
+
+        # --- FIXED: LARGE LOT BLOCKS DETECTOR INTERFACE CONTAINER ---
+        create_section_header("LARGE LOT BLOCKS DETECTOR"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=ft.Column([
+            ft.Text("Whale Large Lot Option Block Detector (+$250k Premium Flows | Expiry <= 3D)", size=11, color=ft.colors.GREY_500),
+            ft.Container(height=5),
+            whale_bar_chart
+        ])))
     )
     refresh_dashboard()
 
