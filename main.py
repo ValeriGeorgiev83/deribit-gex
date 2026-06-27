@@ -32,11 +32,9 @@ def calculate_realized_vol_10d(currency="BTC"):
         if len(closes) < 10:
             return 50.0 # Standard structural fall-back baseline percentage
             
-        # Keep exactly the trailing 10 daily close data points
         target_closes = closes[-10:]
         log_returns = np.diff(np.log(target_closes))
         
-        # Annualizing daily close-to-close standard deviation (sqrt of 365 trading days in crypto)
         daily_std = np.std(log_returns, ddof=1)
         annualized_rv = daily_std * math.sqrt(365) * 100.0
         return float(annualized_rv)
@@ -83,7 +81,6 @@ def fetch_deribit_gex(currency="BTC"):
         iv = float(item.get('mark_iv', 50)) / 100.0
         if iv == 0: iv = 0.5
         
-        # Capture At-The-Money (ATM) Implied Volatility on near-dated expiries
         if days_to_expiry <= 7.0:
             dist = abs(spot_price - strike)
             if dist < min_strike_dist:
@@ -178,7 +175,7 @@ def fetch_deribit_gex(currency="BTC"):
             b1, b2 = buckets_list[i], buckets_list[i+1]
             g1, g2 = macro_grouped.loc[b1], macro_grouped.loc[b2]
             if (g1 < 0 and g2 > 0) or (g1 > 0 and g2 < 0):
-                flip_level = b1 - g1 * (b2 - b1) / (g2 - g1)
+                flip_level = b1 - g1 * (b2 - b1) / (g2 - b1)
                 flip_level = round(flip_level)
                 break
 
@@ -342,7 +339,6 @@ def fetch_deribit_gex(currency="BTC"):
             "whale_bearish": -whale_matrix[b_strike]["bearish"]
         })
 
-    # --- EXECUTETraili trailing 10D RV EXTRACTION PIPELINE ---
     realized_vol_10d_val = calculate_realized_vol_10d(currency)
 
     return {
@@ -407,10 +403,10 @@ def main(page: ft.Page):
     outflows_put_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
     net_flow_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
 
-    # --- NEW: VOLATILITY ANALYTICS INTERFACE ELEMENTS ---
     iv_metric_txt = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600)
     rv_metric_txt = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600)
-    vol_variance_txt = ft.Text("0.0% (Neutral)", size=18, weight=ft.FontWeight.BOLD)
+    # FIXED: Reduced variation result size constraint to match uniform layout (size=14)
+    vol_variance_txt = ft.Text("0.0% (Neutral)", size=14, weight=ft.FontWeight.BOLD)
 
     gex_bar_chart_3d = ft.BarChart(bar_groups=[], bottom_axis=net_axis_3d, 
                                    horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
@@ -540,13 +536,11 @@ def main(page: ft.Page):
             elif net_bias < 0: net_flow_txt.color = ft.colors.RED_400
             else: net_flow_txt.color = ft.colors.GREY_400
 
-            # --- FIXED: RE-BIND METRICS FOR DYNAMIC VOLATILITY INTERFACE CARD ---
             iv_val, rv_val = m['implied_vol'], m['realized_vol']
             iv_metric_txt.value = f"{iv_val:.1f}%"
             rv_metric_txt.value = f"{rv_val:.1f}%"
             
             variance_spread = iv_val - rv_val
-            # FIXED: If IV < RV (Negative Variance Spread) Option premiums are deep discount -> Breakout (Green)
             if variance_spread < 0:
                 vol_variance_txt.value = f"{variance_spread:+.1f}% (Breakout Coming)"
                 vol_variance_txt.color = ft.colors.GREEN_400
@@ -684,7 +678,6 @@ def main(page: ft.Page):
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt)]))),
 
-        # --- FIXED: VOLATILITY VARIANCE ANALYSIS CARD INSERTED CLEANLY BELOW ORDER FLOW CARD ---
         create_section_header("VOLATILITY VARIANCE ANALYSIS (10D)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("Implied Volatility (IV)", iv_metric_txt),
