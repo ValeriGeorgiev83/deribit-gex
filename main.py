@@ -23,6 +23,10 @@ def native_norm_pdf(x):
     """Pure mathematical replacement for scipy.stats.norm.pdf to prevent deployment crashes."""
     return (1.0 / math.sqrt(2 * math.pi)) * math.exp(-0.5 * (x ** 2))
 
+def native_norm_cdf(x):
+    """Pure mathematical approximation for standard normal cumulative distribution function (CDF)."""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
 def calculate_realized_vol_10d(currency="BTC"):
     """Fetches the last 10 daily close prices to calculate annualized close-to-close realized volatility."""
     try:
@@ -46,7 +50,7 @@ def calculate_realized_vol_10d(currency="BTC"):
         return 50.0
 
 def fetch_deribit_gex(currency="BTC"):
-    """Fetches and calculates GEX, market flow, whale blocks, IV/RV, Cohesion, and Charm metrics from Deribit."""
+    """Fetches and calculates GEX, flows, delta drifts, whale blocks, IV/RV, Cohesion, and Charm metrics."""
     try:
         idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
         idx_res = requests.get(idx_url).json()
@@ -207,9 +211,10 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # --- LIVE OPTION TAPE LOGIC + WHALE BLOCK FILTERING ---
+    # --- LIVE OPTION TAPE LOGIC + WHALE BLOCK FILTERING + NDF TRACKING ---
     net_call_fiat_flow = 0.0
     net_put_fiat_flow = 0.0
+    net_delta_premium_drift = 0.0
     detected_whale_blocks = []
     
     try:
@@ -238,6 +243,22 @@ def fetch_deribit_gex(currency="BTC"):
             fiat_notional_value = amount * trade_index_price
             trade_id = str(trade.get('trade_id', ''))
             timestamp_ms = trade.get('timestamp', int(now.timestamp() * 1000))
+            iv_trade = float(trade.get('iv', 50)) / 100.0
+
+            # Compute Black-Scholes Delta for accurate NDF Drift sizing
+            try:
+                t_trade = max(days_to_expiry, 0.01) / 365.0
+                d1_trade = (math.log(trade_index_price / strike) + (0.5 * (iv_trade ** 2)) * t_trade) / (iv_trade * math.sqrt(t_trade))
+                trade_delta = native_norm_cdf(d1_trade) if option_type == 'C' else (native_norm_cdf(d1_trade) - 1.0)
+            except Exception:
+                trade_delta = 0.5 if option_type == 'C' else -0.5
+
+            # Calculate Net Delta Flow: Delta * Fiat Premium Exposure
+            trade_ndf = trade_delta * fiat_notional_value
+            if direction != 'buy':
+                trade_ndf = -trade_ndf # Flip sign if execution hits the dealer's bid side
+
+            net_delta_premium_drift += trade_ndf
 
             if ins_name.endswith('-C'):
                 if direction == 'buy': net_call_fiat_flow += fiat_notional_value
@@ -261,6 +282,7 @@ def fetch_deribit_gex(currency="BTC"):
     time_now = datetime.now(timezone.utc)
     current_ts = time_now.strftime("%m-%d %H:%M")
 
+    # --- HISTORICAL 24H MEMORY SNAPS ENGINE ---
     try:
         last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
         is_duplicate = False
@@ -268,7 +290,12 @@ def fetch_deribit_gex(currency="BTC"):
             last_logged_data = json.loads(last_logged_element)
             if last_logged_data.get("timestamp") == current_ts: is_duplicate = True
         if not is_duplicate:
-            flow_snapshot = {"timestamp": current_ts, "call_flow": round(net_call_fiat_flow, 2), "put_flow": round(net_put_fiat_flow, 2)}
+            flow_snapshot = {
+                "timestamp": current_ts, 
+                "call_flow": round(net_call_fiat_flow, 2), 
+                "put_flow": round(net_put_fiat_flow, 2),
+                "ndf_drift": round(net_delta_premium_drift, 2) # Bind NDF inside the existing historical record pipeline
+            }
             redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
         all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
         valid_flow_records, records_to_remove_count = [], 0
@@ -286,6 +313,9 @@ def fetch_deribit_gex(currency="BTC"):
     total_accumulated_call_flow = sum(f["call_flow"] for f in valid_flow_records) if valid_flow_records else net_call_fiat_flow
     total_accumulated_put_flow = sum(f["put_flow"] for f in valid_flow_records) if valid_flow_records else net_put_fiat_flow
     net_flow_bias = total_accumulated_call_flow + (total_accumulated_put_flow * -1)
+    
+    # Calculate rolling cumulative premium drift sum
+    total_cumulative_ndf_drift = sum(f.get("ndf_drift", 0.0) for f in valid_flow_records) if valid_flow_records else net_delta_premium_drift
 
     try:
         if detected_whale_blocks:
@@ -381,7 +411,8 @@ def fetch_deribit_gex(currency="BTC"):
         "skew_25d": skew_25d_val, "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level,
         "implied_vol": atm_iv, "realized_vol": realized_vol_10d_val,
         "trend_score": total_cohesion_points, "pt_gex": pt_gex, "pt_flow": pt_flow, "pt_price": pt_price, "pt_vol": pt_vol,
-        "net_charm_flow": hourly_charm_rehedge_contracts
+        "net_charm_flow": hourly_charm_rehedge_contracts,
+        "ndf_drift_total": total_cumulative_ndf_drift # Return NDF values cleanly to dashboard state binding loop
     }
 
 def fmt_gex(val):
@@ -447,6 +478,10 @@ def main(page: ft.Page):
 
     charm_flow_metric_txt = ft.Text("0.0 BTC/hr", size=14, weight=ft.FontWeight.BOLD)
     charm_bias_txt = ft.Text("Neutral", size=14, weight=ft.FontWeight.BOLD)
+
+    # --- NEW: NDF DRIFT INTERFACE CONTROL BINDINGS ---
+    ndf_drift_metric_txt = ft.Text("$0.0M", size=14, weight=ft.FontWeight.BOLD)
+    ndf_structural_signal_txt = ft.Text("Neutral Absorption", size=14, weight=ft.FontWeight.BOLD)
 
     gex_bar_chart_3d = ft.BarChart(bar_groups=[], bottom_axis=net_axis_3d, 
                                    horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
@@ -611,7 +646,6 @@ def main(page: ft.Page):
 
             c_flow_val = m['net_charm_flow']
             charm_flow_metric_txt.value = f"{abs(c_flow_val):,.2f} BTC/hr"
-            
             if c_flow_val < -0.05:
                 charm_bias_txt.value = "Automated Buying (Bullish Tailwind)"
                 charm_bias_txt.color = ft.colors.GREEN_400
@@ -621,6 +655,22 @@ def main(page: ft.Page):
             else:
                 charm_bias_txt.value = "Stable Neutral"
                 charm_bias_txt.color = ft.colors.GREY_400
+
+            # --- FIXED: BIND NDF DATA TO DISPLAY CONTAINER FIELDS AT 14PX TEXT SIZES ---
+            drift_val = m['ndf_drift_total']
+            ndf_drift_metric_txt.value = fmt_signed_flow(drift_val)
+            if drift_val > 0:
+                ndf_drift_metric_txt.color = ft.colors.GREEN_400
+                ndf_structural_signal_txt.value = "Aggressive Delta Accumulation"
+                ndf_structural_signal_txt.color = ft.colors.GREEN_400
+            elif drift_val < 0:
+                ndf_drift_metric_txt.color = ft.colors.RED_400
+                ndf_structural_signal_txt.value = "Persistent Delta Distribution"
+                ndf_structural_signal_txt.color = ft.colors.RED_400
+            else:
+                ndf_drift_metric_txt.color = ft.colors.GREY_400
+                ndf_structural_signal_txt.value = "Neutral Absorption"
+                ndf_structural_signal_txt.color = ft.colors.GREY_400
             
             time_now = datetime.now(timezone.utc)
             current_refresh_ts = time_now.strftime("%m-%d %H:%M")
@@ -759,7 +809,6 @@ def main(page: ft.Page):
             ui_row_item("IV - RV Variation", vol_variance_txt)
         ]))),
 
-        create_section_header("INTRADAY TREND COHESION SCORE"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("GEX Regime Component", gex_component_txt),
             ui_row_item("Options Tape Flow Component", flow_component_txt),
@@ -768,11 +817,17 @@ def main(page: ft.Page):
             ui_row_item("ITC Score (12)", cohesion_main_txt)
         ]))),
 
-        # --- FIXED: RENAMED COMPONENT LABEL TO "Dealer Bias" ---
         create_section_header("CHARM EXPOSURE ANALYSIS (CEX)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("Estimated Decay Rehedge Flow", charm_flow_metric_txt),
             ui_row_item("Dealer Bias", charm_bias_txt)
+        ]))),
+
+        # --- FIXED: NDF CARD INSERTED DIRECTLY AFTER CEX TRACKER AND BEFORE THE CANVAS ---
+        create_section_header("CUMULATIVE DELTA PREMIUM DRIFT (NDF)"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([
+            ui_row_item("24H Net Delta Flow Drift", ndf_drift_metric_txt),
+            ui_row_item("Structural Tape Signal", ndf_structural_signal_txt)
         ]))),
 
         create_section_header("LARGE LOT BLOCKS DETECTOR"),
