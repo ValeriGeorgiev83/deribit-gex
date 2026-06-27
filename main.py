@@ -219,7 +219,9 @@ def fetch_deribit_gex(currency="BTC"):
         total_accumulated_call_flow = net_call_fiat_flow
         total_accumulated_put_flow = net_put_fiat_flow
 
-    net_flow_bias = total_accumulated_call_flow + total_accumulated_put_flow
+    # FIXED: Re-mapped the rolling framework definition to follow your custom logic layout rules
+    net_flow_bias = total_accumulated_call_flow + (total_accumulated_put_flow * -1)
+    
     center_spot_1k = round(spot_price / 1000.0) * 1000
     lower_bound = center_spot_1k - 8000
     upper_bound = center_spot_1k + 8000
@@ -279,7 +281,6 @@ def fmt_gex(val):
     abs_val = abs(val)
     return f"{sign}{abs_val/1000:.1f}k" if abs_val >= 1000 else f"{sign}{abs_val:.1f}"
 
-# Customized snapshot signer framework for order flow card metrics
 def fmt_signed_flow(val):
     sign = "+" if val > 0 else ""
     millions_val = val / 1000000.0
@@ -416,22 +417,20 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}"
             
-            # --- MODIFIED: UPDATED 24H ACCUMULATED ORDER FLOW ANALYSIS CARD ---
+            # --- 24H ACCUMULATED ORDER FLOW ANALYSIS CARD ---
             c_flow, p_flow, net_bias = m['call_inflow'], m['put_inflow'], m['net_flow']
             
-            # Call Inflows: Positive -> Green (+), Negative -> Red (-)
             inflows_call_txt.value = fmt_signed_flow(c_flow)
             if c_flow > 0: inflows_call_txt.color = ft.colors.GREEN_400
             elif c_flow < 0: inflows_call_txt.color = ft.colors.RED_400
             else: inflows_call_txt.color = ft.colors.GREY_400
 
-            # Put Inflows: Positive -> Red (+), Negative -> Green (-)
             outflows_put_txt.value = fmt_signed_flow(p_flow)
             if p_flow > 0: outflows_put_txt.color = ft.colors.RED_400
             elif p_flow < 0: outflows_put_txt.color = ft.colors.GREEN_400
             else: outflows_put_txt.color = ft.colors.GREY_400
 
-            # Premium Bias: Positive -> Green (+), Negative -> Red (-)
+            # FIXED: Premium Bias layout renders with clean sequential directional colors
             net_flow_txt.value = fmt_signed_flow(net_bias)
             if net_bias > 0: net_flow_txt.color = ft.colors.GREEN_400
             elif net_bias < 0: net_flow_txt.color = ft.colors.RED_400
