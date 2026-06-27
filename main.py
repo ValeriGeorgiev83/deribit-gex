@@ -219,32 +219,22 @@ def fetch_deribit_gex(currency="BTC"):
         total_accumulated_call_flow = net_call_fiat_flow
         total_accumulated_put_flow = net_put_fiat_flow
 
-    # FIXED: Formula correctly sets Bias = Calls + (Puts * -1)
     net_flow_bias = total_accumulated_call_flow + (total_accumulated_put_flow * -1)
     
     center_spot_1k = round(spot_price / 1000.0) * 1000
     lower_bound = center_spot_1k - 8000
     upper_bound = center_spot_1k + 8000
     
-    df_chart_range = df_3d[(df_3d['strike'] >= lower_bound) & (df_3d['strike'] <= upper_bound)].copy()
-    if df_chart_range.empty:
-        df_chart_range = df_3m[(df_3m['strike'] >= lower_bound) & (df_3m['strike'] <= upper_bound)].copy()
-        
-    df_chart_range['strike_bucket'] = df_chart_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
-    df_chart_range['abs_gex_contribution'] = df_chart_range['gex'].abs()
+    # --- 3D MATRIX RANGE FILTER ---
+    df_chart_range_3d = df_3d[(df_3d['strike'] >= lower_bound) & (df_3d['strike'] <= upper_bound)].copy()
+    df_chart_range_3d['strike_bucket'] = df_chart_range_3d['strike'].apply(lambda x: round(x / 1000.0) * 1000)
+    bucket_data_3d = df_chart_range_3d.groupby('strike_bucket').agg({'gex': 'sum'})
+
+    # --- 3M MATRIX RANGE FILTER ---
+    df_chart_range_3m = df_3m[(df_3m['strike'] >= lower_bound) & (df_3m['strike'] <= upper_bound)].copy()
+    df_chart_range_3m['strike_bucket'] = df_chart_range_3m['strike'].apply(lambda x: round(x / 1000.0) * 1000)
+    bucket_data_3m = df_chart_range_3m.groupby('strike_bucket').agg({'gex': 'sum'})
     
-    df_chart_range['bullish_gex'] = df_chart_range.apply(
-        lambda r: abs(r['gex']) if (r['type'] == 'C' and r['gex'] < 0) or (r['type'] == 'P' and r['gex'] > 0) else 0.0, axis=1
-    )
-    df_chart_range['bearish_gex'] = df_chart_range.apply(
-        lambda r: -abs(r['gex']) if (r['type'] == 'C' and r['gex'] > 0) or (r['type'] == 'P' and r['gex'] < 0) else 0.0, axis=1
-    )
-    
-    bucket_data = df_chart_range.groupby('strike_bucket').agg({
-        'gex': 'sum', 'abs_gex_contribution': 'sum', 'bullish_gex': 'sum', 'bearish_gex': 'sum'
-    })
-    
-    # --- IV SKEW OVERVIEW CALCULATION ARRAY (7D EXPIRY) ---
     df_7d_range = df_7d[(df_7d['strike'] >= lower_bound) & (df_7d['strike'] <= upper_bound)].copy() if not df_7d.empty else pd.DataFrame()
     bucket_iv_map = {}
     if not df_7d_range.empty:
@@ -255,15 +245,15 @@ def fetch_deribit_gex(currency="BTC"):
     chart_matrix = []
     
     for idx, b_strike in enumerate(target_buckets):
-        gex_val = bucket_data.get('gex', {}).get(b_strike, 0.0)
-        abs_gex_val = bucket_data.get('abs_gex_contribution', {}).get(b_strike, 0.0)
-        bull_val = bucket_data.get('bullish_gex', {}).get(b_strike, 0.0)
-        bear_val = bucket_data.get('bearish_gex', {}).get(b_strike, 0.0)
+        gex_3d_val = bucket_data_3d.get('gex', {}).get(b_strike, 0.0)
+        gex_3m_val = bucket_data_3m.get('gex', {}).get(b_strike, 0.0)
         iv_skew_val = bucket_iv_map.get(b_strike, 0.0)
         
         chart_matrix.append({
-            "index": idx, "strike": b_strike, "gex": gex_val, "abs_gex": abs_gex_val,
-            "bullish_gex": bull_val, "bearish_gex": bear_val, "iv_skew": iv_skew_val
+            "index": idx, "strike": b_strike, 
+            "gex_3d": gex_3d_val, "abs_gex_3d": abs(gex_3d_val),
+            "gex_3m": gex_3m_val, "abs_gex_3m": abs(gex_3m_val),
+            "iv_skew": iv_skew_val
         })
 
     return {
@@ -292,9 +282,11 @@ def main(page: ft.Page):
     page.scroll = ft.ScrollMode.AUTO
     page.padding = 14
 
-    net_axis = ft.ChartAxis(labels=[], labels_size=24)
-    abs_axis = ft.ChartAxis(labels=[], labels_size=24)
-    breakdown_axis = ft.ChartAxis(labels=[], labels_size=24)
+    net_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
+    abs_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
+    net_axis_3m = ft.ChartAxis(labels=[], labels_size=24)
+    abs_axis_3m = ft.ChartAxis(labels=[], labels_size=24)
+    
     iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_left_axis = ft.ChartAxis(labels=[], labels_size=42)
 
@@ -322,20 +314,28 @@ def main(page: ft.Page):
     outflows_put_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
     net_flow_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
 
-    gex_bar_chart = ft.BarChart(bar_groups=[], bottom_axis=net_axis, 
-                                horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
-                                vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
-                                animate=True, interactive=True, height=240)
+    gex_bar_chart_3d = ft.BarChart(bar_groups=[], bottom_axis=net_axis_3d, 
+                                   horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
+                                   vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
+                                   animate=True, interactive=True, height=240)
 
-    abs_gex_chart = ft.BarChart(
-        bar_groups=[], bottom_axis=abs_axis,
+    abs_gex_chart_3d = ft.BarChart(
+        bar_groups=[], bottom_axis=abs_axis_3d,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         animate=True, interactive=True, height=240
     )
 
-    breakdown_gex_chart = ft.BarChart(
-        bar_groups=[], bottom_axis=breakdown_axis,
+    # --- NEW BAR CANVAS ARRAYS FOR 3M PROFILES ---
+    gex_bar_chart_3m = ft.BarChart(
+        bar_groups=[], bottom_axis=net_axis_3m,
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        animate=True, interactive=True, height=240
+    )
+
+    abs_gex_chart_3m = ft.BarChart(
+        bar_groups=[], bottom_axis=abs_axis_3m,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         animate=True, interactive=True, height=240
@@ -430,7 +430,6 @@ def main(page: ft.Page):
             elif p_flow < 0: outflows_put_txt.color = ft.colors.GREEN_400
             else: outflows_put_txt.color = ft.colors.GREY_400
 
-            # Premium Bias updates cleanly using the re-mapped return logic keys
             net_flow_txt.value = fmt_signed_flow(net_bias)
             if net_bias > 0: net_flow_txt.color = ft.colors.GREEN_400
             elif net_bias < 0: net_flow_txt.color = ft.colors.RED_400
@@ -455,7 +454,7 @@ def main(page: ft.Page):
             except Exception as ex: print(f"Cloud Logging Interrupted: {ex}")
             
             # --- BAR CHARTS & IV SKEW RENDERING LOOPS ---
-            new_groups, abs_groups, breakdown_groups, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], float('inf'), -1
+            groups_net_3d, groups_abs_3d, groups_net_3m, groups_abs_3m, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist: min_dist, spot_index = dist, item['index']
@@ -479,40 +478,40 @@ def main(page: ft.Page):
             iv_left_axis.labels = y_iv_labels
             
             for item in m['chart_data']:
-                val, abs_val, strike_val, is_spot = item['gex'], item['abs_gex'], item['strike'], (item['index'] == spot_index)
-                bull_val, bear_val, iv_val = item['bullish_gex'], item['bearish_gex'], item['iv_skew']
+                strike_val, is_spot = item['strike'], (item['index'] == spot_index)
+                val_3d, abs_3d, val_3m, abs_3m, iv_val = item['gex_3d'], item['abs_gex_3d'], item['gex_3m'], item['abs_gex_3m'], item['iv_skew']
                 
-                new_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val, color=ft.colors.GREEN_400 if val >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
-                abs_groups.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_val, color=ft.colors.YELLOW, width=12, border_radius=2)]))
+                # Populating 3D chart datasets with exact original profile themes
+                groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color=ft.colors.GREEN_400 if val_3d >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
+                groups_abs_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_3d, color=ft.colors.YELLOW, width=12, border_radius=2)]))
                 
-                breakdown_groups.append(ft.BarChartGroup(
-                    x=item['index'],
-                    bar_rods=[
-                        ft.BarChartRod(from_y=0, to_y=bull_val, color="#FFFFF0", width=6, border_radius=1),
-                        ft.BarChartRod(from_y=0, to_y=bear_val, color="#87CEEB", width=6, border_radius=1)
-                    ]
-                ))
+                # FIXED: Populating Net 3M chart data using #bab7ab for positive and #1661b4 for negative
+                groups_net_3m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3m, color="#bab7ab" if val_3m >= 0 else "#1661b4", width=12, border_radius=2)]))
+                
+                # FIXED: Populating Abs 3M chart data using #ab47bc color theme cleanly
+                groups_abs_3m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_3m, color="#ab47bc", width=12, border_radius=2)]))
                 
                 iv_bar_groups.append(ft.BarChartGroup(
                     x=item['index'],
-                    bar_rods=[
-                        ft.BarChartRod(from_y=floor_y, to_y=iv_val if iv_val > 0 else floor_y, color=ft.colors.ORANGE_700, width=12, border_radius=2)
-                    ]
+                    bar_rods=[ft.BarChartRod(from_y=floor_y, to_y=iv_val if iv_val > 0 else floor_y, color=ft.colors.ORANGE_700, width=12, border_radius=2)]
                 ))
                 
                 if strike_val % 2000 == 0:
                     label_color = ft.colors.BLUE_200 if is_spot else ft.colors.GREY_400
                     new_labels.append(ft.ChartAxisLabel(value=item['index'], label=ft.Text(f"{strike_val/1000:.0f}k", size=10, color=label_color, rotate=45, weight=ft.FontWeight.BOLD if is_spot else ft.FontWeight.NORMAL)))
             
-            gex_bar_chart.bar_groups = new_groups
-            net_axis.labels = new_labels
+            gex_bar_chart_3d.bar_groups = groups_net_3d
+            net_axis_3d.labels = new_labels
             
-            abs_gex_chart.bar_groups = abs_groups
-            abs_axis.labels = new_labels
-            
-            drop_axis_labels = list(new_labels)
-            breakdown_gex_chart.bar_groups = breakdown_groups
-            breakdown_axis.labels = drop_axis_labels
+            abs_gex_chart_3d.bar_groups = groups_abs_3d
+            abs_axis_3d.labels = new_labels
+
+            # Synchronizing the dynamic data updates for the brand new 3M charts
+            gex_bar_chart_3m.bar_groups = groups_net_3m
+            net_axis_3m.labels = list(new_labels)
+
+            abs_gex_chart_3m.bar_groups = groups_abs_3m
+            abs_axis_3m.labels = list(new_labels)
             
             iv_skew_bar_chart.bar_groups = iv_bar_groups
             iv_bottom_axis.labels = list(new_labels)
@@ -524,12 +523,18 @@ def main(page: ft.Page):
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
-        create_section_header("NET GAMMA PROFILES BY STRIKE"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart)),
-        create_section_header("ABSOLUTE GAMMA EXPOSURE"),
-        ft.Card(content=ft.Container(padding=15, content=abs_gex_chart)),
-        create_section_header("GAMMA EXPOSURE BREAKDOWN"),
-        ft.Card(content=ft.Container(padding=15, content=breakdown_gex_chart)),
+        # --- FIXED: RENAME AND INSERT ORDER OF ALL SPECIFIED PROFILES CHARTS ---
+        create_section_header("NET GAMMA EXPOSURE BY STRIKE (3D)"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_3d)),
+        
+        create_section_header("ABS GAMMA EXPOSURE BY STRIKE (3D)"),
+        ft.Card(content=ft.Container(padding=15, content=abs_gex_chart_3d)),
+
+        create_section_header("NET GAMMA EXPOSURE BY STRIKE (3M)"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_3m)),
+
+        create_section_header("ABS GAMMA EXPOSURE BY STRIKE (3M)"),
+        ft.Card(content=ft.Container(padding=15, content=abs_gex_chart_3m)),
         
         create_section_header("TOTAL GAMMA EXPOSURE (3M)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
