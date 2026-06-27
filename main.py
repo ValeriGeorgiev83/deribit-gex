@@ -112,7 +112,6 @@ def fetch_deribit_gex(currency="BTC"):
                 
             charm_day_footprint = charm_per_contract / 365.0
             
-            # --- Analytical Black-Scholes Vanna Profile Engine ---
             vanna_per_contract = -pdf_value * (d2 / iv)
             vanna_exposure_footprint = oi * vanna_per_contract * 0.01
             if option_type == 'P':
@@ -445,7 +444,8 @@ def main(page: ft.Page):
     iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_left_axis = ft.ChartAxis(labels=[], labels_size=42)
 
-    spot_price_container = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
+    # --- MODIFIED: SPOT CONTAINER VALUE SET TO SIZE 14 AND HEX COLOR #b5d045 ---
+    spot_price_container = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color="#b5d045")
     
     call_gex_txt_1m = ft.Text("0.0k", size=14, weight=ft.FontWeight.W_600)
     put_gex_txt_1m = ft.Text("0.0k", size=14, weight=ft.FontWeight.W_600)
@@ -702,7 +702,6 @@ def main(page: ft.Page):
                     redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
             except Exception as ex: print(f"Cloud Logging Interrupted: {ex}")
             
-            # --- FIXED: min_dist NOW PROPERLY INITALIZED TO float('inf') INSTEAD OF [] ---
             groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
@@ -778,7 +777,9 @@ def main(page: ft.Page):
     page.add(
         ft.Row([ft.Text("DERIBIT GEX DASHBOARD", size=20, weight=ft.FontWeight.BOLD),
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_price_container], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
+        
+        # --- FIXED: RENAME TITLE TO "Bitcoin Spot Price" AS PER LAYOUT RULE ---
+        ft.Card(content=ft.Container(content=ft.Row([ft.Text("Bitcoin Spot Price", size=11, color=ft.colors.GREY_500), spot_price_container], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (3D)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_3d)),
