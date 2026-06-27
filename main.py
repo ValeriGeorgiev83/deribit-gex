@@ -50,7 +50,7 @@ def calculate_realized_vol_10d(currency="BTC"):
         return 50.0
 
 def fetch_deribit_gex(currency="BTC"):
-    """Fetches and calculates GEX, flows, delta drifts, whale blocks, IV/RV, Cohesion, Charm, and Vanna metrics."""
+    """Fetches and calculates GEX, flows, delta drifts, whale blocks, IV/RV, Cohesion, Charm, Vanna, and Volume/OI Velocity metrics."""
     try:
         idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
         idx_res = requests.get(idx_url).json()
@@ -371,7 +371,9 @@ def fetch_deribit_gex(currency="BTC"):
 
     df_chart_range_1m = base_df[base_df['days_to_expiry'] <= 30.0][(base_df['strike'] >= lower_bound) & (base_df['strike'] <= upper_bound)].copy()
     df_chart_range_1m['strike_bucket'] = df_chart_range_1m['strike'].apply(lambda x: round(x / 1000.0) * 1000)
-    bucket_data_1m = df_chart_range_1m.groupby('strike_bucket').agg({'gex': 'sum', 'vanna': 'sum'})
+    
+    # --- FIXED: ACCUMULATE AND GROUP REFRESH MATRICES FOR INTEGRATED INTRADAY VELOCITY ---
+    bucket_data_1m = df_chart_range_1m.groupby('strike_bucket').agg({'gex': 'sum', 'vanna': 'sum', 'volume': 'sum', 'oi': 'sum'})
     
     df_7d_range = df_7d[(df_7d['strike'] >= lower_bound) & (df_7d['strike'] <= upper_bound)].copy() if not df_7d.empty else pd.DataFrame()
     bucket_iv_map = {}
@@ -386,11 +388,16 @@ def fetch_deribit_gex(currency="BTC"):
         vanna_val = bucket_data_1m.get('vanna', {}).get(b_strike, 0.0)
         iv_skew_val = bucket_iv_map.get(b_strike, 0.0)
         
+        # Calculate localized structural Vol/OI footprint velocity ratios
+        b_vol = bucket_data_1m.get('volume', {}).get(b_strike, 0.0)
+        b_oi = bucket_data_1m.get('oi', {}).get(b_strike, 0.0)
+        velocity_pct = (b_vol / b_oi * 100.0) if b_oi > 0 else 0.0
+        
         chart_matrix.append({
             "index": idx, "strike": b_strike, 
             "gex_3d": gex_3d_val, "abs_gex_3d": abs(gex_3d_val),
             "gex_1m": gex_1m_val, "abs_gex_1m": abs(gex_1m_val),
-            "vanna": vanna_val,
+            "vanna": vanna_val, "velocity_ratio": velocity_pct,
             "iv_skew": iv_skew_val,
             "whale_bullish": whale_matrix[b_strike]["bullish"],
             "whale_bearish": -whale_matrix[b_strike]["bearish"]
@@ -440,11 +447,11 @@ def main(page: ft.Page):
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     vanna_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
+    velocity_bottom_axis = ft.ChartAxis(labels=[], labels_size=24) # Velocity Chart Labels Axis binding
     whale_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_left_axis = ft.ChartAxis(labels=[], labels_size=42)
 
-    # --- MODIFIED: SPOT CONTAINER VALUE SET TO SIZE 14 AND HEX COLOR #b5d045 ---
     spot_price_container = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color="#b5d045")
     
     call_gex_txt_1m = ft.Text("0.0k", size=14, weight=ft.FontWeight.W_600)
@@ -490,6 +497,9 @@ def main(page: ft.Page):
     ndf_drift_metric_txt = ft.Text("$0.0M", size=14, weight=ft.FontWeight.BOLD)
     ndf_structural_signal_txt = ft.Text("Neutral Absorption", size=14, weight=ft.FontWeight.BOLD)
 
+    # --- NEW: INITIALIZE INTRADAY VELOCITY ANOMALY DATA READOUT BOUNDS ---
+    velocity_rank_txt = ft.Text("No anomalies detected", size=14, weight=ft.FontWeight.W_600, color=ft.colors.CYAN_200)
+
     gex_bar_chart_3d = ft.BarChart(bar_groups=[], bottom_axis=net_axis_3d, 
                                    horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
                                    vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
@@ -517,6 +527,14 @@ def main(page: ft.Page):
 
     vanna_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=vanna_bottom_axis,
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        animate=True, interactive=True, height=240
+    )
+
+    # --- NEW: INITIALIZE INTRADAY VELOCITY BAR CHART PROFILE ---
+    velocity_bar_chart = ft.BarChart(
+        bar_groups=[], bottom_axis=velocity_bottom_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         animate=True, interactive=True, height=240
@@ -702,7 +720,7 @@ def main(page: ft.Page):
                     redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
             except Exception as ex: print(f"Cloud Logging Interrupted: {ex}")
             
-            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], float('inf'), -1
+            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_velocity, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist: min_dist, spot_index = dist, item['index']
@@ -725,9 +743,18 @@ def main(page: ft.Page):
                 curr_y += 10.0
             iv_left_axis.labels = y_iv_labels
             
+            # Sorting system to isolate dynamic intraday option anomalies
+            sorted_velocity_items = sorted(m['chart_data'], key=lambda x: x['velocity_ratio'], reverse=True)
+            top_anomalies = [item for item in sorted_velocity_items if item['velocity_ratio'] > 0][:3]
+            if top_anomalies:
+                rank_strings = [f"${item['strike']/1000:.0f}k Strike ({item['velocity_ratio']:.1f}%)" for item in top_anomalies]
+                velocity_rank_txt.value = " | ".join(rank_strings)
+            else:
+                velocity_rank_txt.value = "Stable Intraday Activity Profile"
+
             for item in m['chart_data']:
                 strike_val, is_spot = item['strike'], (item['index'] == spot_index)
-                val_3d, abs_3d, val_1m, abs_1m, v_exposure, iv_val_item = item['gex_3d'], item['abs_gex_3d'], item['gex_1m'], item['abs_gex_1m'], item['vanna'], item['iv_skew']
+                val_3d, abs_3d, val_1m, abs_1m, v_exposure, vel_ratio, iv_val_item = item['gex_3d'], item['abs_gex_3d'], item['gex_1m'], item['abs_gex_1m'], item['vanna'], item['velocity_ratio'], item['iv_skew']
                 w_bull, w_bear = item['whale_bullish'], item['whale_bearish']
 
                 groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color=ft.colors.GREEN_400 if val_3d >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
@@ -735,6 +762,9 @@ def main(page: ft.Page):
                 groups_net_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_1m, color="#bab7ab" if val_1m >= 0 else "#1661b4", width=12, border_radius=2)]))
                 groups_abs_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_1m, color="#ab47bc", width=12, border_radius=2)]))
                 groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a", width=12, border_radius=2)]))
+                
+                # --- FIXED: BIND INTRADAY VELOCITY EXPOSURE PIPELINE WITH COLOR CODE #0097a7 ---
+                groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=12, border_radius=2)]))
 
                 groups_whale.append(ft.BarChartGroup(
                     x=item['index'],
@@ -766,6 +796,10 @@ def main(page: ft.Page):
             vanna_bar_chart.bar_groups = groups_vanna
             vanna_bottom_axis.labels = list(new_labels)
 
+            # --- FIXED: RE-BIND ACTIVE REFRESH STATE DATA TO THE VELOCITY CANVAS ---
+            velocity_bar_chart.bar_groups = groups_velocity
+            velocity_bottom_axis.labels = list(new_labels)
+
             whale_bar_chart.bar_groups = groups_whale
             whale_bottom_axis.labels = list(new_labels)
 
@@ -777,8 +811,6 @@ def main(page: ft.Page):
     page.add(
         ft.Row([ft.Text("DERIBIT GEX DASHBOARD", size=20, weight=ft.FontWeight.BOLD),
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        
-        # --- FIXED: RENAME TITLE TO "Bitcoin Spot Price" AS PER LAYOUT RULE ---
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("Bitcoin Spot Price", size=11, color=ft.colors.GREY_500), spot_price_container], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (3D)"),
@@ -802,6 +834,14 @@ def main(page: ft.Page):
         
         create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
+
+        # --- FIXED: INTRADAY VELOCITY CARD INSERTED DIRECTLY AFTER VANNA (VEX) CARD ---
+        create_section_header("INTRADAY GAMMA VELOCITY PROFILE (VOLUME / OI)"),
+        ft.Card(content=ft.Container(padding=15, content=ft.Column([
+            velocity_bar_chart,
+            ft.Container(height=10),
+            ui_row_item("Top Session Velocity Anomalies", velocity_rank_txt)
+        ]))),
 
         create_section_header("TOTAL GAMMA EXPOSURE (1M)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
