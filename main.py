@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import flet as ft
 from datetime import datetime, timezone, timedelta
+from scipy.stats import norm
 
 # Initialize Upstash Redis with exact working credentials configuration
 from upstash_redis import Redis
@@ -42,7 +43,7 @@ def calculate_realized_vol_10d(currency="BTC"):
         return 50.0
 
 def fetch_deribit_gex(currency="BTC"):
-    """Fetches and calculates GEX, market flow, whale blocks, IV/RV, and cohesion metrics from Deribit."""
+    """Fetches and calculates GEX, market flow, whale blocks, IV/RV, Cohesion, and Charm metrics from Deribit."""
     try:
         idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
         idx_res = requests.get(idx_url).json()
@@ -58,6 +59,7 @@ def fetch_deribit_gex(currency="BTC"):
     parsed_options = []
     atm_iv = 50.0
     min_strike_dist = float('inf')
+    net_charm_accumulator = 0.0
     
     for item in data_list:
         name = item['instrument_name']
@@ -91,13 +93,35 @@ def fetch_deribit_gex(currency="BTC"):
             t_days = max(days_to_expiry, 0.01) / 365.0
             distance = abs(math.log(spot_price / strike))
             approx_gamma = (1.0 / (iv * math.sqrt(t_days) * math.sqrt(2 * math.pi))) * math.exp(-0.5 * (distance / (iv * math.sqrt(t_days)))**2) / spot_price
+            
+            # --- Charm (Delta Decay) Black-Scholes Approximation Engine ---
+            d1 = (math.log(spot_price / strike) + (0.5 * (iv ** 2)) * t_days) / (iv * math.sqrt(t_days))
+            d2 = d1 - iv * math.sqrt(t_days)
+            
+            # Standard risk-free assumption baseline (r=0 for crypto options models)
+            if option_type == 'C':
+                charm_per_contract = -norm.pdf(d1) * ((0.0) / (iv * math.sqrt(t_days)) - d2 / (2 * t_days))
+            else:
+                charm_per_contract = norm.pdf(d1) * ((0.0) / (iv * math.sqrt(t_days)) + d2 / (2 * t_days))
+                
+            # Convert to delta hedge footprint per day
+            charm_day_footprint = charm_per_contract / 365.0
         except Exception:
             approx_gamma = 0.0001 / max(1.0, abs(spot_price - strike))
+            charm_day_footprint = 0.0
 
         gex_value = oi * approx_gamma * (spot_price ** 2) * 0.01
+        
+        # Siding mapping for Net Charm: assume market makers are short retail protection options
+        # Long Call GEX is Positive, meaning dealers are long calls -> Charm is naturally Negative.
+        # Long Put GEX is Negative, meaning dealers are long puts -> Charm is naturally Positive.
+        item_charm_exposure = oi * charm_day_footprint
         if option_type == 'P':
             gex_value = -gex_value
+            item_charm_exposure = -item_charm_exposure
             
+        net_charm_accumulator += item_charm_exposure
+        
         parsed_options.append({
             'strike': strike, 
             'type': option_type, 
@@ -347,6 +371,9 @@ def fetch_deribit_gex(currency="BTC"):
     pt_vol = 3.0 if (atm_iv - realized_vol_10d_val) < 0 else 0.0
     total_cohesion_points = pt_gex + pt_flow + pt_price + pt_vol
 
+    # Hourly baseline hedge requirements scale conversion
+    hourly_charm_rehedge_contracts = net_charm_accumulator / 24.0
+
     return {
         "spot": spot_price, 
         "call_gex_1m": call_gex_1m, "put_gex_1m": put_gex_1m, "net_gex_1m": net_gex_1m, "call_weight_1m": call_weight_pct_1m,
@@ -356,7 +383,8 @@ def fetch_deribit_gex(currency="BTC"):
         "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "chart_data": chart_matrix,
         "skew_25d": skew_25d_val, "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level,
         "implied_vol": atm_iv, "realized_vol": realized_vol_10d_val,
-        "trend_score": total_cohesion_points, "pt_gex": pt_gex, "pt_flow": pt_flow, "pt_price": pt_price, "pt_vol": pt_vol
+        "trend_score": total_cohesion_points, "pt_gex": pt_gex, "pt_flow": pt_flow, "pt_price": pt_price, "pt_vol": pt_vol,
+        "net_charm_flow": hourly_charm_rehedge_contracts
     }
 
 def fmt_gex(val):
@@ -414,12 +442,15 @@ def main(page: ft.Page):
     rv_metric_txt = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600)
     vol_variance_txt = ft.Text("0.0% (Neutral)", size=14, weight=ft.FontWeight.BOLD)
 
-    # --- MODIFIED: REMOVED MAXIMUM ACHIEVABLE BOUNDS AND PREFIX SYMBOLS FROM TRACKERS ---
     cohesion_main_txt = ft.Text("0.0 (Neutral)", size=14, weight=ft.FontWeight.BOLD)
     gex_component_txt = ft.Text("0.0", size=14, color=ft.colors.GREY_400)
     flow_component_txt = ft.Text("0.0", size=14, color=ft.colors.GREY_400)
     price_component_txt = ft.Text("0.0", size=14, color=ft.colors.GREY_400)
     vol_component_txt = ft.Text("0.0", size=14, color=ft.colors.GREY_400)
+
+    # --- NEW: CHARM METRIC FIELD CONTROLLERS ---
+    charm_flow_metric_txt = ft.Text("0.0 BTC/hr", size=14, weight=ft.FontWeight.BOLD)
+    charm_bias_txt = ft.Text("Neutral", size=14, weight=ft.FontWeight.BOLD)
 
     gex_bar_chart_3d = ft.BarChart(bar_groups=[], bottom_axis=net_axis_3d, 
                                    horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
@@ -561,7 +592,6 @@ def main(page: ft.Page):
                 vol_variance_txt.value = f"{variance_spread:+.1f}% (Sideways Risk)"
                 vol_variance_txt.color = ft.colors.RED_400
 
-            # --- MODIFIED: ADJUSTED ASSIGNMENT STRINGS TO DISPLAY ONLY THE RAW RESULTS ---
             scr = m['trend_score']
             gex_component_txt.value = f"{m['pt_gex']:.1f}"
             flow_component_txt.value = f"{m['pt_flow']:.1f}"
@@ -583,6 +613,21 @@ def main(page: ft.Page):
             else:
                 cohesion_main_txt.value = f"{scr:.1f} (Strong Bullish)"
                 cohesion_main_txt.color = ft.colors.GREEN_600
+
+            # --- FIXED: RE-BIND DYNAMIC ENGINE CALCULATIONS FOR CHARM FLOW AT 14PX ---
+            c_flow_val = m['net_charm_flow']
+            charm_flow_metric_txt.value = f"{abs(c_flow_val):,.2f} BTC/hr"
+            
+            # Negative charm means dealers must buy asset futures continuously to offset decaying delta
+            if c_flow_val < -0.05:
+                charm_bias_txt.value = "Automated Buying (Bullish Tailwind)"
+                charm_bias_txt.color = ft.colors.GREEN_400
+            elif c_flow_val > 0.05:
+                charm_bias_txt.value = "Automated Selling (Bearish Headwind)"
+                charm_bias_txt.color = ft.colors.RED_400
+            else:
+                charm_bias_txt.value = "Stable Neutral"
+                charm_bias_txt.color = ft.colors.GREY_400
             
             time_now = datetime.now(timezone.utc)
             current_refresh_ts = time_now.strftime("%m-%d %H:%M")
@@ -721,14 +766,20 @@ def main(page: ft.Page):
             ui_row_item("IV - RV Variation", vol_variance_txt)
         ]))),
 
-        # --- MODIFIED: INTRADAY TREND COHESION ROW ORDERS FLIPPED AND CLEANED UP ---
         create_section_header("INTRADAY TREND COHESION SCORE"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("GEX Regime Component", gex_component_txt),
             ui_row_item("Options Tape Flow Component", flow_component_txt),
             ui_row_item("Price Structure Component", price_component_txt),
             ui_row_item("Volatility Setup Component", vol_component_txt),
-            ui_row_item("ITC Score (12)", cohesion_main_txt) # Moved to last row with cleaned names and font sizing
+            ui_row_item("ITC Score (12)", cohesion_main_txt)
+        ]))),
+
+        # --- FIXED: CHARM EXPOSURE ANALYSIS CARD PLACED DIRECTLY BELOW ITC SCORE CARD ---
+        create_section_header("CHARM EXPOSURE ANALYSIS (CEX)"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([
+            ui_row_item("Estimated Decay Rehedge Flow", charm_flow_metric_txt),
+            ui_row_item("Dealer Rehedge Bias Direction", charm_bias_txt)
         ]))),
 
         create_section_header("LARGE LOT BLOCKS DETECTOR"),
