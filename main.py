@@ -50,7 +50,7 @@ def calculate_realized_vol_10d(currency="BTC"):
         return 50.0
 
 def fetch_deribit_gex(currency="BTC"):
-    """Fetches and calculates GEX, flows, delta drifts, whale blocks, IV/RV, Cohesion, and Charm metrics."""
+    """Fetches and calculates GEX, flows, delta drifts, whale blocks, IV/RV, Cohesion, Charm, and Vanna metrics."""
     try:
         idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
         idx_res = requests.get(idx_url).json()
@@ -111,9 +111,16 @@ def fetch_deribit_gex(currency="BTC"):
                 charm_per_contract = pdf_value * ((0.0) / (iv * math.sqrt(t_days)) + d2 / (2 * t_days))
                 
             charm_day_footprint = charm_per_contract / 365.0
+            
+            # --- Analytical Black-Scholes Vanna Profile Engine ---
+            vanna_per_contract = -pdf_value * (d2 / iv)
+            vanna_exposure_footprint = oi * vanna_per_contract * 0.01
+            if option_type == 'P':
+                vanna_exposure_footprint = -vanna_exposure_footprint # Sign flipped for Put dealer structure orientation
         except Exception:
             approx_gamma = 0.0001 / max(1.0, abs(spot_price - strike))
             charm_day_footprint = 0.0
+            vanna_exposure_footprint = 0.0
 
         gex_value = oi * approx_gamma * (spot_price ** 2) * 0.01
         
@@ -130,6 +137,7 @@ def fetch_deribit_gex(currency="BTC"):
             'oi': oi, 
             'volume': volume, 
             'gex': gex_value,
+            'vanna': vanna_exposure_footprint,
             'iv': iv * 100.0, 
             'days_to_expiry': days_to_expiry
         })
@@ -362,9 +370,9 @@ def fetch_deribit_gex(currency="BTC"):
     df_chart_range_3d['strike_bucket'] = df_chart_range_3d['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     bucket_data_3d = df_chart_range_3d.groupby('strike_bucket').agg({'gex': 'sum'})
 
-    df_chart_range_1m = df_1m[(df_1m['strike'] >= lower_bound) & (df_1m['strike'] <= upper_bound)].copy()
+    df_chart_range_1m = base_df[base_df['days_to_expiry'] <= 30.0][(base_df['strike'] >= lower_bound) & (base_df['strike'] <= upper_bound)].copy()
     df_chart_range_1m['strike_bucket'] = df_chart_range_1m['strike'].apply(lambda x: round(x / 1000.0) * 1000)
-    bucket_data_1m = df_chart_range_1m.groupby('strike_bucket').agg({'gex': 'sum'})
+    bucket_data_1m = df_chart_range_1m.groupby('strike_bucket').agg({'gex': 'sum', 'vanna': 'sum'}) # Accumulate Vanna inside tracking loop
     
     df_7d_range = df_7d[(df_7d['strike'] >= lower_bound) & (df_7d['strike'] <= upper_bound)].copy() if not df_7d.empty else pd.DataFrame()
     bucket_iv_map = {}
@@ -376,12 +384,14 @@ def fetch_deribit_gex(currency="BTC"):
     for idx, b_strike in enumerate(target_buckets):
         gex_3d_val = bucket_data_3d.get('gex', {}).get(b_strike, 0.0)
         gex_1m_val = bucket_data_1m.get('gex', {}).get(b_strike, 0.0)
+        vanna_val = bucket_data_1m.get('vanna', {}).get(b_strike, 0.0)
         iv_skew_val = bucket_iv_map.get(b_strike, 0.0)
         
         chart_matrix.append({
             "index": idx, "strike": b_strike, 
             "gex_3d": gex_3d_val, "abs_gex_3d": abs(gex_3d_val),
             "gex_1m": gex_1m_val, "abs_gex_1m": abs(gex_1m_val),
+            "vanna": vanna_val,
             "iv_skew": iv_skew_val,
             "whale_bullish": whale_matrix[b_strike]["bullish"],
             "whale_bearish": -whale_matrix[b_strike]["bearish"]
@@ -430,23 +440,22 @@ def main(page: ft.Page):
     abs_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
+    vanna_bottom_axis = ft.ChartAxis(labels=[], labels_size=24) # Added Vanna horizontal axis label tracking
     whale_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_left_axis = ft.ChartAxis(labels=[], labels_size=42)
 
     spot_price_container = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     
-    # --- MODIFIED: TOTAL GEX (1M) FONT SIZES SCALED TO 14 ---
     call_gex_txt_1m = ft.Text("0.0k", size=14, weight=ft.FontWeight.W_600)
     put_gex_txt_1m = ft.Text("0.0k", size=14, weight=ft.FontWeight.W_600)
     net_gex_txt_1m = ft.Text("0.0k", size=14, weight=ft.FontWeight.BOLD)
     weight_txt_1m = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_300)
 
-    # --- MODIFIED: TOTAL GEX (3D) FONT SIZES SCALED TO 14 AND CALL WEIGHT RE-COLORED ---
     call_gex_txt_3d = ft.Text("0.0k", size=14, weight=ft.FontWeight.W_600)
     put_gex_txt_3d = ft.Text("0.0k", size=14, weight=ft.FontWeight.W_600)
     net_gex_txt_3d = ft.Text("0.0k", size=14, weight=ft.FontWeight.BOLD)
-    weight_txt_3d = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600, color="#ab47bc") # Set to #ab47bc
+    weight_txt_3d = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600, color="#ab47bc")
     
     c1_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREEN_400)
     c2_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREEN_400)
@@ -455,19 +464,16 @@ def main(page: ft.Page):
 
     skew_25d_txt = ft.Text("0.00% (Neutral)", size=14, weight=ft.FontWeight.BOLD)
     
-    # --- MODIFIED: IMPORTANT LEVELS COMPONENT VALUE FONT SIZES SCALED TO 14 ---
     pain_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600)
     flip_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.ORANGE_400)
     breakout_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_ACCENT)
     res_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_300)
     sup_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.PINK_400)
     
-    # --- MODIFIED: ACCUMULATED ORDER FLOW ANALYSIS VALUE FONT SIZES SCALED TO 14 ---
     inflows_call_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
     outflows_put_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
     net_flow_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
 
-    # --- MODIFIED: VOLATILITY METRIC VALUE FONT SIZES SCALED TO 14 ---
     iv_metric_txt = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
     rv_metric_txt = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
     vol_variance_txt = ft.Text("0.0% (Neutral)", size=14, weight=ft.FontWeight.BOLD)
@@ -504,6 +510,14 @@ def main(page: ft.Page):
 
     abs_gex_chart_1m = ft.BarChart(
         bar_groups=[], bottom_axis=abs_axis_1m,
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        animate=True, interactive=True, height=240
+    )
+
+    # --- NEW: VANNA CONTROLLER INITIALIZATION WITH COLOR CODE #d26e5a ---
+    vanna_bar_chart = ft.BarChart(
+        bar_groups=[], bottom_axis=vanna_bottom_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         animate=True, interactive=True, height=240
@@ -689,7 +703,7 @@ def main(page: ft.Page):
                     redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
             except Exception as ex: print(f"Cloud Logging Interrupted: {ex}")
             
-            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], float('inf'), -1
+            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], [], -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist: min_dist, spot_index = dist, item['index']
@@ -714,7 +728,7 @@ def main(page: ft.Page):
             
             for item in m['chart_data']:
                 strike_val, is_spot = item['strike'], (item['index'] == spot_index)
-                val_3d, abs_3d, val_1m, abs_1m, iv_val_item = item['gex_3d'], item['abs_gex_3d'], item['gex_1m'], item['abs_gex_1m'], item['iv_skew']
+                val_3d, abs_3d, val_1m, abs_1m, v_exposure, iv_val_item = item['gex_3d'], item['abs_gex_3d'], item['gex_1m'], item['abs_gex_1m'], item['vanna'], item['iv_skew']
                 w_bull, w_bear = item['whale_bullish'], item['whale_bearish']
 
                 groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color=ft.colors.GREEN_400 if val_3d >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
@@ -722,6 +736,9 @@ def main(page: ft.Page):
                 groups_net_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_1m, color="#bab7ab" if val_1m >= 0 else "#1661b4", width=12, border_radius=2)]))
                 groups_abs_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_1m, color="#ab47bc", width=12, border_radius=2)]))
                 
+                # --- FIXED: BIND REFRESH ITERATOR LOGIC FOR THE VANNA MATRIX PROFILE ---
+                groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a", width=12, border_radius=2)]))
+
                 groups_whale.append(ft.BarChartGroup(
                     x=item['index'],
                     bar_rods=[
@@ -749,6 +766,10 @@ def main(page: ft.Page):
             abs_gex_chart_1m.bar_groups = groups_abs_1m
             abs_axis_1m.labels = list(new_labels)
             
+            # --- FIXED: RE-BIND DATA ELEMENTS TO VANNA RENDERING FIELD CONTROLLERS ---
+            vanna_bar_chart.bar_groups = groups_vanna
+            vanna_bottom_axis.labels = list(new_labels)
+
             whale_bar_chart.bar_groups = groups_whale
             whale_bottom_axis.labels = list(new_labels)
 
@@ -781,6 +802,10 @@ def main(page: ft.Page):
         create_section_header("ABS GAMMA EXPOSURE BY STRIKE (1M)"),
         ft.Card(content=ft.Container(padding=15, content=abs_gex_chart_1m)),
         
+        # --- FIXED: INTRADAY VANNA EXPOSURE PROFILE CHART CARD INSERTED IMMEDIATELY AFTER ABS 1M CHART ---
+        create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
+
         create_section_header("TOTAL GAMMA EXPOSURE (1M)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("Call Gamma", call_gex_txt_1m), ui_row_item("Put Gamma", put_gex_txt_1m), ui_row_item("Net Gamma", net_gex_txt_1m), ui_row_item("Call Weight (%)", weight_txt_1m)
@@ -799,14 +824,8 @@ def main(page: ft.Page):
         
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
-        
-        # --- FIXED: RENAMED ENTRIES TO MIXED CASE AND SIZED INTERNAL CONTROLLERS TO 14 ---
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([
-            ui_row_item("Net Call Inflows", inflows_call_txt), 
-            ui_row_item("Net Put Inflows", outflows_put_txt), 
-            ui_row_item("Net Premium Bias", net_flow_txt)
-        ]))),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Net Call Inflows", inflows_call_txt), ui_row_item("Net Put Inflows", outflows_put_txt), ui_row_item("Net Premium Bias", net_flow_txt)]))),
 
         create_section_header("VOLATILITY VARIANCE ANALYSIS (10D)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
