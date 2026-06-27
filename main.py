@@ -277,7 +277,8 @@ def fmt_signed_flow(val):
     return f"{sign}{millions_val:,.1f}M"
 
 def main(page: ft.Page):
-    page.title = "Deribit GEX Terminal"
+    # FIXED: Window tab context title updated to match dashboard designation
+    page.title = "DERIBIT GEX DASHBOARD"
     page.theme_mode = ft.ThemeMode.DARK
     page.scroll = ft.ScrollMode.AUTO
     page.padding = 14
@@ -326,7 +327,6 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # --- NEW BAR CANVAS ARRAYS FOR 3M PROFILES ---
     gex_bar_chart_3m = ft.BarChart(
         bar_groups=[], bottom_axis=net_axis_3m,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
@@ -481,14 +481,9 @@ def main(page: ft.Page):
                 strike_val, is_spot = item['strike'], (item['index'] == spot_index)
                 val_3d, abs_3d, val_3m, abs_3m, iv_val = item['gex_3d'], item['abs_gex_3d'], item['gex_3m'], item['abs_gex_3m'], item['iv_skew']
                 
-                # Populating 3D chart datasets with exact original profile themes
                 groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color=ft.colors.GREEN_400 if val_3d >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
                 groups_abs_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_3d, color=ft.colors.YELLOW, width=12, border_radius=2)]))
-                
-                # FIXED: Populating Net 3M chart data using #bab7ab for positive and #1661b4 for negative
                 groups_net_3m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3m, color="#bab7ab" if val_3m >= 0 else "#1661b4", width=12, border_radius=2)]))
-                
-                # FIXED: Populating Abs 3M chart data using #ab47bc color theme cleanly
                 groups_abs_3m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_3m, color="#ab47bc", width=12, border_radius=2)]))
                 
                 iv_bar_groups.append(ft.BarChartGroup(
@@ -506,7 +501,6 @@ def main(page: ft.Page):
             abs_gex_chart_3d.bar_groups = groups_abs_3d
             abs_axis_3d.labels = new_labels
 
-            # Synchronizing the dynamic data updates for the brand new 3M charts
             gex_bar_chart_3m.bar_groups = groups_net_3m
             net_axis_3m.labels = list(new_labels)
 
@@ -519,11 +513,11 @@ def main(page: ft.Page):
             page.update()
 
     page.add(
-        ft.Row([ft.Text("⚡ Deribit GEX Terminal", size=20, weight=ft.FontWeight.BOLD),
+        # FIXED: Removed structural lightning symbol emoji from row layout definition header completely
+        ft.Row([ft.Text("DERIBIT GEX DASHBOARD", size=20, weight=ft.FontWeight.BOLD),
                 ft.ElevatedButton("Refresh", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("BTC UNDERLYING SPOT", size=11, color=ft.colors.GREY_500), spot_txt], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
-        # --- FIXED: RENAME AND INSERT ORDER OF ALL SPECIFIED PROFILES CHARTS ---
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (3D)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_3d)),
         
