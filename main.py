@@ -312,9 +312,9 @@ def main(page: ft.Page):
     net_gex_txt_3d = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
     weight_txt_3d = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_800)
     
-    # --- ADDED: 3D CONCENTRATION LEVEL DATA INTERFACE ROW TERMINALS ---
-    c1_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.RED_400)
-    c2_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.RED_400)
+    # --- MODIFIED: Adjusted Call Concentration labels to render green ---
+    c1_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREEN_400)
+    c2_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREEN_400)
     p1_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.RED_400)
     p2_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.RED_400)
 
@@ -415,7 +415,6 @@ def main(page: ft.Page):
             net_gex_txt_3d.color = ft.colors.ORANGE_400 if net_3d >= 0 else ft.colors.BLUE_400
             weight_txt_3d.value = f"{m['call_weight_3d']:.1f}%"
 
-            # --- UPDATED: RE-ASSIGN DATA STRINGS FOR THE SPECIFIED STRIKE WALLS ---
             c1_txt.value = f"${m['c1_wall']:,.0f}"
             c2_txt.value = f"${m['c2_wall']:,.0f}"
             p1_txt.value = f"${m['p1_wall']:,.0f}"
@@ -541,7 +540,6 @@ def main(page: ft.Page):
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (3D)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_3d)),
         
-        # --- FIXED: ADDED THE 4 DYNAMIC CONCENTRATION WALL ROWS UNDER THE 3D ABS CHART ---
         create_section_header("ABS GAMMA EXPOSURE BY STRIKE (3D)"),
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
             abs_gex_chart_3d,
