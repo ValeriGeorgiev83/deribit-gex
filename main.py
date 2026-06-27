@@ -3,6 +3,7 @@ import math
 import json
 import requests
 import pandas as pd
+import numpy as np
 import flet as ft
 from datetime import datetime, timezone, timedelta
 
@@ -18,8 +19,32 @@ REDIS_WHALE_KEY = "deribit_whale_blocks_24h"
 MAX_HISTORY_POINTS = 3500
 WHALE_THRESHOLD_USD = 250000.0
 
+def calculate_realized_vol_10d(currency="BTC"):
+    """Fetches the last 10 daily close prices to calculate annualized close-to-close realized volatility."""
+    try:
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        start_ts = now_ts - (12 * 86400) # Fetch slightly more than 10 days to guarantee intervals
+        
+        url = f"https://www.deribit.com/api/v2/public/get_tradingview_chart_data?instrument_name={currency.upper()}-USD&resolution=1D&start_timestamp={start_ts * 1000}&end_timestamp={now_ts * 1000}"
+        res = requests.get(url).json()
+        closes = res.get('result', {}).get('c', [])
+        
+        if len(closes) < 10:
+            return 50.0 # Standard structural fall-back baseline percentage
+            
+        # Keep exactly the trailing 10 daily close data points
+        target_closes = closes[-10:]
+        log_returns = np.diff(np.log(target_closes))
+        
+        # Annualizing daily close-to-close standard deviation (sqrt of 365 trading days in crypto)
+        daily_std = np.std(log_returns, ddof=1)
+        annualized_rv = daily_std * math.sqrt(365) * 100.0
+        return float(annualized_rv)
+    except Exception:
+        return 50.0
+
 def fetch_deribit_gex(currency="BTC"):
-    """Fetches and calculates GEX, market flow, whale blocks, and IV Skew metrics from Deribit."""
+    """Fetches and calculates GEX, market flow, whale blocks, IV/RV metrics from Deribit."""
     try:
         idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
         idx_res = requests.get(idx_url).json()
@@ -33,6 +58,8 @@ def fetch_deribit_gex(currency="BTC"):
 
     now = datetime.now(timezone.utc)
     parsed_options = []
+    atm_iv = 50.0
+    min_strike_dist = float('inf')
     
     for item in data_list:
         name = item['instrument_name']
@@ -55,6 +82,13 @@ def fetch_deribit_gex(currency="BTC"):
             
         iv = float(item.get('mark_iv', 50)) / 100.0
         if iv == 0: iv = 0.5
+        
+        # Capture At-The-Money (ATM) Implied Volatility on near-dated expiries
+        if days_to_expiry <= 7.0:
+            dist = abs(spot_price - strike)
+            if dist < min_strike_dist:
+                min_strike_dist = dist
+                atm_iv = iv * 100.0
             
         try:
             t_days = max(days_to_expiry, 0.01) / 365.0
@@ -193,7 +227,6 @@ def fetch_deribit_gex(currency="BTC"):
                 if direction == 'buy': net_put_fiat_flow -= fiat_notional_value
                 else: net_put_fiat_flow += fiat_notional_value
                 
-            # Whale block criterion check: Expiry <= 3 Days AND Value >= $250k
             if days_to_expiry <= 3.0 and fiat_notional_value >= WHALE_THRESHOLD_USD:
                 detected_whale_blocks.append({
                     "trade_id": trade_id,
@@ -209,7 +242,6 @@ def fetch_deribit_gex(currency="BTC"):
     time_now = datetime.now(timezone.utc)
     current_ts = time_now.strftime("%m-%d %H:%M")
 
-    # --- SAVE snap TOTAL ORDER FLOW SNAPSHOTS ---
     try:
         last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
         is_duplicate = False
@@ -236,7 +268,6 @@ def fetch_deribit_gex(currency="BTC"):
     total_accumulated_put_flow = sum(f["put_flow"] for f in valid_flow_records) if valid_flow_records else net_put_fiat_flow
     net_flow_bias = total_accumulated_call_flow + (total_accumulated_put_flow * -1)
 
-    # --- CLOUD WHALE BLOCKS DATABASE MANAGEMENT (EVICTION SAFEGUARDED) ---
     try:
         if detected_whale_blocks:
             existing_whale_records = redis.lrange(REDIS_WHALE_KEY, 0, -1)
@@ -265,7 +296,6 @@ def fetch_deribit_gex(currency="BTC"):
         print(f"Cloud Whale Engine Interrupt: {ex}")
         valid_whale_blocks = []
 
-    # --- WHALE LOTS MATH MATRIX MATRIX ENGINE ---
     center_spot_1k = round(spot_price / 1000.0) * 1000
     lower_bound = center_spot_1k - 8000
     upper_bound = center_spot_1k + 8000
@@ -278,7 +308,6 @@ def fetch_deribit_gex(currency="BTC"):
             opt_type = b_trade["type"]
             side = b_trade["direction"]
             val = b_trade["fiat_value"]
-            
             if (opt_type == "C" and side == "buy") or (opt_type == "P" and side == "sell"):
                 whale_matrix[rounded_strike]["bullish"] += val
             elif (opt_type == "C" and side == "sell") or (opt_type == "P" and side == "buy"):
@@ -313,6 +342,9 @@ def fetch_deribit_gex(currency="BTC"):
             "whale_bearish": -whale_matrix[b_strike]["bearish"]
         })
 
+    # --- EXECUTETraili trailing 10D RV EXTRACTION PIPELINE ---
+    realized_vol_10d_val = calculate_realized_vol_10d(currency)
+
     return {
         "spot": spot_price, 
         "call_gex_1m": call_gex_1m, "put_gex_1m": put_gex_1m, "net_gex_1m": net_gex_1m, "call_weight_1m": call_weight_pct_1m,
@@ -320,7 +352,8 @@ def fetch_deribit_gex(currency="BTC"):
         "max_pain": max_pain_level, "flip": flip_level, "breakout": breakout_price, 
         "resistance": resistance_level, "support": support_level, "call_inflow": total_accumulated_call_flow, 
         "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "chart_data": chart_matrix,
-        "skew_25d": skew_25d_val, "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level
+        "skew_25d": skew_25d_val, "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level,
+        "implied_vol": atm_iv, "realized_vol": realized_vol_10d_val
     }
 
 def fmt_gex(val):
@@ -343,7 +376,6 @@ def main(page: ft.Page):
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     whale_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
-    
     iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_left_axis = ft.ChartAxis(labels=[], labels_size=42)
 
@@ -374,6 +406,11 @@ def main(page: ft.Page):
     inflows_call_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
     outflows_put_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
     net_flow_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
+
+    # --- NEW: VOLATILITY ANALYTICS INTERFACE ELEMENTS ---
+    iv_metric_txt = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600)
+    rv_metric_txt = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600)
+    vol_variance_txt = ft.Text("0.0% (Neutral)", size=18, weight=ft.FontWeight.BOLD)
 
     gex_bar_chart_3d = ft.BarChart(bar_groups=[], bottom_axis=net_axis_3d, 
                                    horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
@@ -502,6 +539,20 @@ def main(page: ft.Page):
             if net_bias > 0: net_flow_txt.color = ft.colors.GREEN_400
             elif net_bias < 0: net_flow_txt.color = ft.colors.RED_400
             else: net_flow_txt.color = ft.colors.GREY_400
+
+            # --- FIXED: RE-BIND METRICS FOR DYNAMIC VOLATILITY INTERFACE CARD ---
+            iv_val, rv_val = m['implied_vol'], m['realized_vol']
+            iv_metric_txt.value = f"{iv_val:.1f}%"
+            rv_metric_txt.value = f"{rv_val:.1f}%"
+            
+            variance_spread = iv_val - rv_val
+            # FIXED: If IV < RV (Negative Variance Spread) Option premiums are deep discount -> Breakout (Green)
+            if variance_spread < 0:
+                vol_variance_txt.value = f"{variance_spread:+.1f}% (Breakout Coming)"
+                vol_variance_txt.color = ft.colors.GREEN_400
+            else:
+                vol_variance_txt.value = f"{variance_spread:+.1f}% (Sideways Risk)"
+                vol_variance_txt.color = ft.colors.RED_400
             
             time_now = datetime.now(timezone.utc)
             current_refresh_ts = time_now.strftime("%m-%d %H:%M")
@@ -545,7 +596,7 @@ def main(page: ft.Page):
             
             for item in m['chart_data']:
                 strike_val, is_spot = item['strike'], (item['index'] == spot_index)
-                val_3d, abs_3d, val_1m, abs_1m, iv_val = item['gex_3d'], item['abs_gex_3d'], item['gex_1m'], item['abs_gex_1m'], item['iv_skew']
+                val_3d, abs_3d, val_1m, abs_1m, iv_val_item = item['gex_3d'], item['abs_gex_3d'], item['gex_1m'], item['abs_gex_1m'], item['iv_skew']
                 w_bull, w_bear = item['whale_bullish'], item['whale_bearish']
 
                 groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color=ft.colors.GREEN_400 if val_3d >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
@@ -563,7 +614,7 @@ def main(page: ft.Page):
 
                 iv_bar_groups.append(ft.BarChartGroup(
                     x=item['index'],
-                    bar_rods=[ft.BarChartRod(from_y=floor_y, to_y=iv_val if iv_val > 0 else floor_y, color=ft.colors.ORANGE_700, width=12, border_radius=2)]
+                    bar_rods=[ft.BarChartRod(from_y=floor_y, to_y=iv_val_item if iv_val_item > 0 else floor_y, color=ft.colors.ORANGE_700, width=12, border_radius=2)]
                 ))
                 
                 if strike_val % 2000 == 0:
@@ -633,7 +684,14 @@ def main(page: ft.Page):
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt)]))),
 
-        # FIXED: Removed the sub-title description text string from inside the card container layout
+        # --- FIXED: VOLATILITY VARIANCE ANALYSIS CARD INSERTED CLEANLY BELOW ORDER FLOW CARD ---
+        create_section_header("VOLATILITY VARIANCE ANALYSIS (10D)"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([
+            ui_row_item("Implied Volatility (IV)", iv_metric_txt),
+            ui_row_item("Realized Volatility (RV)", rv_metric_txt),
+            ui_row_item("IV - RV Variation", vol_variance_txt)
+        ]))),
+
         create_section_header("LARGE LOT BLOCKS DETECTOR"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=whale_bar_chart))
     )
