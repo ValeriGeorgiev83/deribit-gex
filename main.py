@@ -436,15 +436,17 @@ def main(page: ft.Page):
 
     spot_price_container = ft.Text("$0.00", size=22, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_400)
     
-    call_gex_txt_1m = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
-    put_gex_txt_1m = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
-    net_gex_txt_1m = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
-    weight_txt_1m = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_300)
+    # --- MODIFIED: TOTAL GEX (1M) FONT SIZES SCALED TO 14 ---
+    call_gex_txt_1m = ft.Text("0.0k", size=14, weight=ft.FontWeight.W_600)
+    put_gex_txt_1m = ft.Text("0.0k", size=14, weight=ft.FontWeight.W_600)
+    net_gex_txt_1m = ft.Text("0.0k", size=14, weight=ft.FontWeight.BOLD)
+    weight_txt_1m = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_300)
 
-    call_gex_txt_3d = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
-    put_gex_txt_3d = ft.Text("0.0k", size=18, weight=ft.FontWeight.W_600)
-    net_gex_txt_3d = ft.Text("0.0k", size=22, weight=ft.FontWeight.BOLD)
-    weight_txt_3d = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_800)
+    # --- MODIFIED: TOTAL GEX (3D) FONT SIZES SCALED TO 14 AND CALL WEIGHT RE-COLORED ---
+    call_gex_txt_3d = ft.Text("0.0k", size=14, weight=ft.FontWeight.W_600)
+    put_gex_txt_3d = ft.Text("0.0k", size=14, weight=ft.FontWeight.W_600)
+    net_gex_txt_3d = ft.Text("0.0k", size=14, weight=ft.FontWeight.BOLD)
+    weight_txt_3d = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600, color="#ab47bc") # Set to #ab47bc
     
     c1_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREEN_400)
     c2_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREEN_400)
@@ -452,18 +454,22 @@ def main(page: ft.Page):
     p2_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.RED_400)
 
     skew_25d_txt = ft.Text("0.00% (Neutral)", size=14, weight=ft.FontWeight.BOLD)
-    pain_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600)
-    flip_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.ORANGE_400)
-    breakout_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_ACCENT)
-    res_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_300)
-    sup_txt = ft.Text("$0.00", size=18, weight=ft.FontWeight.W_600, color=ft.colors.PINK_400)
     
-    inflows_call_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
-    outflows_put_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
-    net_flow_txt = ft.Text("0.0M", size=18, weight=ft.FontWeight.W_600)
+    # --- MODIFIED: IMPORTANT LEVELS COMPONENT VALUE FONT SIZES SCALED TO 14 ---
+    pain_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600)
+    flip_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.ORANGE_400)
+    breakout_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_ACCENT)
+    res_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_300)
+    sup_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.PINK_400)
+    
+    # --- MODIFIED: ACCUMULATED ORDER FLOW ANALYSIS VALUE FONT SIZES SCALED TO 14 ---
+    inflows_call_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
+    outflows_put_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
+    net_flow_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
 
-    iv_metric_txt = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600)
-    rv_metric_txt = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600)
+    # --- MODIFIED: VOLATILITY METRIC VALUE FONT SIZES SCALED TO 14 ---
+    iv_metric_txt = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
+    rv_metric_txt = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
     vol_variance_txt = ft.Text("0.0% (Neutral)", size=14, weight=ft.FontWeight.BOLD)
 
     cohesion_main_txt = ft.Text("0.0 (Neutral)", size=14, weight=ft.FontWeight.BOLD)
@@ -793,8 +799,14 @@ def main(page: ft.Page):
         
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
+        
+        # --- FIXED: RENAMED ENTRIES TO MIXED CASE AND SIZED INTERNAL CONTROLLERS TO 14 ---
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt)]))),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([
+            ui_row_item("Net Call Inflows", inflows_call_txt), 
+            ui_row_item("Net Put Inflows", outflows_put_txt), 
+            ui_row_item("Net Premium Bias", net_flow_txt)
+        ]))),
 
         create_section_header("VOLATILITY VARIANCE ANALYSIS (10D)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
@@ -820,7 +832,7 @@ def main(page: ft.Page):
         create_section_header("CUMULATIVE DELTA PREMIUM DRIFT (NDF)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("24H Net Delta Flow Drift", ndf_drift_metric_txt),
-            ui_row_item("Tape", ndf_structural_signal_txt) # FIXED: Renamed row label directly to "Tape"
+            ui_row_item("Tape", ndf_structural_signal_txt)
         ]))),
 
         create_section_header("LARGE LOT BLOCKS DETECTOR"),
