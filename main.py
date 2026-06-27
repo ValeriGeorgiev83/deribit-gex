@@ -310,7 +310,7 @@ def fetch_deribit_gex(currency="BTC"):
             "gex_1m": gex_1m_val, "abs_gex_1m": abs(gex_1m_val),
             "iv_skew": iv_skew_val,
             "whale_bullish": whale_matrix[b_strike]["bullish"],
-            "whale_bearish": -whale_matrix[b_strike]["bearish"] # Sided cleanly below zero mark line
+            "whale_bearish": -whale_matrix[b_strike]["bearish"]
         })
 
     return {
@@ -401,7 +401,6 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    # --- NEW: WHALE LOT BAR CHART CANVAS CONFIGURATION ARRAYS ---
     whale_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=whale_bottom_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
@@ -504,7 +503,6 @@ def main(page: ft.Page):
             elif net_bias < 0: net_flow_txt.color = ft.colors.RED_400
             else: net_flow_txt.color = ft.colors.GREY_400
             
-            # --- REDIS snap REFRESH SNAPSHOT ENGINE ---
             time_now = datetime.now(timezone.utc)
             current_refresh_ts = time_now.strftime("%m-%d %H:%M")
             try:
@@ -522,7 +520,6 @@ def main(page: ft.Page):
                     redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
             except Exception as ex: print(f"Cloud Logging Interrupted: {ex}")
             
-            # --- BAR CHARTS Rendering Loops ---
             groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
@@ -556,7 +553,6 @@ def main(page: ft.Page):
                 groups_net_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_1m, color="#bab7ab" if val_1m >= 0 else "#1661b4", width=12, border_radius=2)]))
                 groups_abs_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_1m, color="#ab47bc", width=12, border_radius=2)]))
                 
-                # FIXED: Rendering stacked bullish/bearish blocks on the same strike index
                 groups_whale.append(ft.BarChartGroup(
                     x=item['index'],
                     bar_rods=[
@@ -584,7 +580,6 @@ def main(page: ft.Page):
             abs_gex_chart_1m.bar_groups = groups_abs_1m
             abs_axis_1m.labels = list(new_labels)
             
-            # Update whale canvas bindings
             whale_bar_chart.bar_groups = groups_whale
             whale_bottom_axis.labels = list(new_labels)
 
@@ -638,13 +633,9 @@ def main(page: ft.Page):
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt)]))),
 
-        # --- FIXED: LARGE LOT BLOCKS DETECTOR INTERFACE CONTAINER ---
+        # FIXED: Removed the sub-title description text string from inside the card container layout
         create_section_header("LARGE LOT BLOCKS DETECTOR"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=ft.Column([
-            ft.Text("Whale Large Lot Option Block Detector (+$250k Premium Flows | Expiry <= 3D)", size=11, color=ft.colors.GREY_500),
-            ft.Container(height=5),
-            whale_bar_chart
-        ])))
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=whale_bar_chart))
     )
     refresh_dashboard()
 
