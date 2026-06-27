@@ -219,7 +219,7 @@ def fetch_deribit_gex(currency="BTC"):
         total_accumulated_call_flow = net_call_fiat_flow
         total_accumulated_put_flow = net_put_fiat_flow
 
-    # FIXED: Re-mapped the rolling framework definition to follow your custom logic layout rules
+    # FIXED: Formula correctly sets Bias = Calls + (Puts * -1)
     net_flow_bias = total_accumulated_call_flow + (total_accumulated_put_flow * -1)
     
     center_spot_1k = round(spot_price / 1000.0) * 1000
@@ -430,7 +430,7 @@ def main(page: ft.Page):
             elif p_flow < 0: outflows_put_txt.color = ft.colors.GREEN_400
             else: outflows_put_txt.color = ft.colors.GREY_400
 
-            # FIXED: Premium Bias layout renders with clean sequential directional colors
+            # Premium Bias updates cleanly using the re-mapped return logic keys
             net_flow_txt.value = fmt_signed_flow(net_bias)
             if net_bias > 0: net_flow_txt.color = ft.colors.GREEN_400
             elif net_bias < 0: net_flow_txt.color = ft.colors.RED_400
