@@ -224,7 +224,6 @@ def fetch_deribit_gex(currency="BTC"):
     net_delta_premium_drift = 0.0
     detected_whale_blocks = []
     
-    # --- IN-MEMORY AGGRESSOR DATA STRUCTURES ---
     call_ask_hit_premium = 0.0
     call_bid_hit_premium = 0.0
     put_ask_hit_premium = 0.0
@@ -250,7 +249,7 @@ def fetch_deribit_gex(currency="BTC"):
             except Exception:
                 continue
                 
-            direction = trade.get('direction', 'buy') # 'buy' = Hit Ask (Aggressive Buy), 'sell' = Hit Bid (Aggressive Sell)
+            direction = trade.get('direction', 'buy')
             amount = float(trade.get('amount', 0))
             trade_index_price = float(trade.get('index_price', spot_price))
             fiat_notional_value = amount * trade_index_price
@@ -271,7 +270,6 @@ def fetch_deribit_gex(currency="BTC"):
 
             net_delta_premium_drift += trade_ndf
 
-            # --- LIVE AGGRESSOR FOOTPRINT LOGIC ---
             if option_type == 'C':
                 if direction == 'buy':
                     net_call_fiat_flow += fiat_notional_value
@@ -437,7 +435,6 @@ def fetch_deribit_gex(currency="BTC"):
         "trend_score": total_cohesion_points, "pt_gex": pt_gex, "pt_flow": pt_flow, "pt_price": pt_price, "pt_vol": pt_vol,
         "net_charm_flow": hourly_charm_rehedge_contracts,
         "ndf_drift_total": total_cumulative_ndf_drift,
-        # Pack the raw snapshot aggressor premiums safely into engine outputs
         "aggr_call_ask": call_ask_hit_premium, "aggr_call_bid": call_bid_hit_premium,
         "aggr_put_ask": put_ask_hit_premium, "aggr_put_bid": put_bid_hit_premium
     }
@@ -496,7 +493,7 @@ def main(page: ft.Page):
     outflows_put_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
     net_flow_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
 
-    # --- NEW: INITIALIZE AGGRESSOR METRIC RENDERING FIELDS FOR ORDER FLOW ANALYSIS ---
+    # --- MODIFIED: REMOVED ENTER EMBLEM SYMBOLS FROM LABELS ---
     call_ask_hit_txt = ft.Text("0.0M", size=14, color=ft.colors.GREEN_400)
     call_bid_hit_txt = ft.Text("0.0M", size=14, color=ft.colors.RED_400)
     put_ask_hit_txt = ft.Text("0.0M", size=14, color=ft.colors.RED_400)
@@ -664,14 +661,12 @@ def main(page: ft.Page):
             elif net_bias < 0: net_flow_txt.color = ft.colors.RED_400
             else: net_flow_txt.color = ft.colors.GREY_400
 
-            # --- REFRESH IN-MEMORY AGGRESSOR TRACKING CONTROLLERS ---
             c_ask, c_bid, p_ask, p_bid = m['aggr_call_ask'], m['aggr_call_bid'], m['aggr_put_ask'], m['aggr_put_bid']
             call_ask_hit_txt.value = f"{c_ask / 1000000.0:.1f}M"
             call_bid_hit_txt.value = f"{c_bid / 1000000.0:.1f}M"
             put_ask_hit_txt.value = f"{p_ask / 1000000.0:.1f}M"
             put_bid_hit_txt.value = f"{p_bid / 1000000.0:.1f}M"
             
-            # Formulate net aggressive premium direction context
             net_aggr_premium = (c_ask + p_bid) - (c_bid + p_ask)
             aggr_net_bias_txt.value = fmt_signed_flow(net_aggr_premium)
             if net_aggr_premium > 0: aggr_net_bias_txt.color = ft.colors.GREEN_400
@@ -901,19 +896,21 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         
-        # --- FIXED: EXPANDED 24H ORDER FLOW ANALYSIS CARD TO EMBED LIVE AGGRESSOR TRACKING METRICS ---
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("Net Call Inflows", inflows_call_txt), 
             ui_row_item("Net Put Inflows", outflows_put_txt), 
-            ui_row_item("Net Premium Bias", net_flow_txt),
-            ft.Divider(height=10, color=ft.colors.GREY_800),
-            ft.Text("BLOCK TRADE AGGRESSOR TRACKING (BID vs ASK)", size=11, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_500),
-            ui_row_item("↳ Call Aggressor Buys (Hit Ask)", call_ask_hit_txt),
-            ui_row_item("↳ Call Aggressor Sells (Hit Bid)", call_bid_hit_txt),
-            ui_row_item("↳ Put Aggressor Buys (Hit Ask)", put_ask_hit_txt),
-            ui_row_item("↳ Put Aggressor Sells (Hit Bid)", put_bid_hit_txt),
-            ui_row_item("↳ Net Aggressor Premium Bias", aggr_net_bias_txt)
+            ui_row_item("Net Premium Bias", net_flow_txt)
+        ]))),
+
+        # --- MODIFIED: AGGRESSOR ELEMENTS DETACHED INTO A SEPARATE INDEPENDENT CARD ---
+        create_section_header("BLOCK TRADE AGGRESSOR ANALYSIS (BID vs ASK)"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([
+            ui_row_item("Call Aggressor Buys (Hit Ask)", call_ask_hit_txt),
+            ui_row_item("Call Aggressor Sells (Hit Bid)", call_bid_hit_txt),
+            ui_row_item("Put Aggressor Buys (Hit Ask)", put_ask_hit_txt),
+            ui_row_item("Put Aggressor Sells (Hit Bid)", put_bid_hit_txt),
+            ui_row_item("Net Aggressor Premium Bias", aggr_net_bias_txt)
         ]))),
 
         create_section_header("VOLATILITY VARIANCE ANALYSIS (10D)"),
