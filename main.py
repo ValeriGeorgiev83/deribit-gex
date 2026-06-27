@@ -23,14 +23,14 @@ def calculate_realized_vol_10d(currency="BTC"):
     """Fetches the last 10 daily close prices to calculate annualized close-to-close realized volatility."""
     try:
         now_ts = int(datetime.now(timezone.utc).timestamp())
-        start_ts = now_ts - (12 * 86400) # Fetch slightly more than 10 days to guarantee intervals
+        start_ts = now_ts - (12 * 86400)
         
         url = f"https://www.deribit.com/api/v2/public/get_tradingview_chart_data?instrument_name={currency.upper()}-USD&resolution=1D&start_timestamp={start_ts * 1000}&end_timestamp={now_ts * 1000}"
         res = requests.get(url).json()
         closes = res.get('result', {}).get('c', [])
         
         if len(closes) < 10:
-            return 50.0 # Standard structural fall-back baseline percentage
+            return 50.0
             
         target_closes = closes[-10:]
         log_returns = np.diff(np.log(target_closes))
@@ -42,7 +42,7 @@ def calculate_realized_vol_10d(currency="BTC"):
         return 50.0
 
 def fetch_deribit_gex(currency="BTC"):
-    """Fetches and calculates GEX, market flow, whale blocks, IV/RV metrics from Deribit."""
+    """Fetches and calculates GEX, market flow, whale blocks, IV/RV, and cohesion metrics from Deribit."""
     try:
         idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
         idx_res = requests.get(idx_url).json()
@@ -175,7 +175,7 @@ def fetch_deribit_gex(currency="BTC"):
             b1, b2 = buckets_list[i], buckets_list[i+1]
             g1, g2 = macro_grouped.loc[b1], macro_grouped.loc[b2]
             if (g1 < 0 and g2 > 0) or (g1 > 0 and g2 < 0):
-                flip_level = b1 - g1 * (b2 - b1) / (g2 - b1)
+                flip_level = b1 - g1 * (b2 - b1) / (g2 - g1)
                 flip_level = round(flip_level)
                 break
 
@@ -341,6 +341,13 @@ def fetch_deribit_gex(currency="BTC"):
 
     realized_vol_10d_val = calculate_realized_vol_10d(currency)
 
+    # --- NEW: INTRADAY TREND COHESION SCORE CALCULATION MATRIX ---
+    pt_gex = (1.5 if net_gex_1m >= 0 else 0.0) + (1.5 if net_gex_3d >= 0 else 0.0)
+    pt_flow = 3.0 if net_flow_bias > 0 else 0.0
+    pt_price = (1.5 if spot_price > flip_level else 0.0) + (1.5 if spot_price > max_pain_level else 0.0)
+    pt_vol = 3.0 if (atm_iv - realized_vol_10d_val) < 0 else 0.0
+    total_cohesion_points = pt_gex + pt_flow + pt_price + pt_vol
+
     return {
         "spot": spot_price, 
         "call_gex_1m": call_gex_1m, "put_gex_1m": put_gex_1m, "net_gex_1m": net_gex_1m, "call_weight_1m": call_weight_pct_1m,
@@ -349,7 +356,8 @@ def fetch_deribit_gex(currency="BTC"):
         "resistance": resistance_level, "support": support_level, "call_inflow": total_accumulated_call_flow, 
         "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "chart_data": chart_matrix,
         "skew_25d": skew_25d_val, "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level,
-        "implied_vol": atm_iv, "realized_vol": realized_vol_10d_val
+        "implied_vol": atm_iv, "realized_vol": realized_vol_10d_val,
+        "trend_score": total_cohesion_points, "pt_gex": pt_gex, "pt_flow": pt_flow, "pt_price": pt_price, "pt_vol": pt_vol
     }
 
 def fmt_gex(val):
@@ -405,8 +413,14 @@ def main(page: ft.Page):
 
     iv_metric_txt = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600)
     rv_metric_txt = ft.Text("0.0%", size=18, weight=ft.FontWeight.W_600)
-    # FIXED: Reduced variation result size constraint to match uniform layout (size=14)
     vol_variance_txt = ft.Text("0.0% (Neutral)", size=14, weight=ft.FontWeight.BOLD)
+
+    # --- NEW: COHESION UI ELEMENT CONTROLLERS ---
+    cohesion_main_txt = ft.Text("0.0 / 12 (Neutral)", size=14, weight=ft.FontWeight.BOLD)
+    gex_component_txt = ft.Text("0.0 / 3.0", size=14, color=ft.colors.GREY_400)
+    flow_component_txt = ft.Text("0.0 / 3.0", size=14, color=ft.colors.GREY_400)
+    price_component_txt = ft.Text("0.0 / 3.0", size=14, color=ft.colors.GREY_400)
+    vol_component_txt = ft.Text("0.0 / 3.0", size=14, color=ft.colors.GREY_400)
 
     gex_bar_chart_3d = ft.BarChart(bar_groups=[], bottom_axis=net_axis_3d, 
                                    horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5), 
@@ -547,6 +561,29 @@ def main(page: ft.Page):
             else:
                 vol_variance_txt.value = f"{variance_spread:+.1f}% (Sideways Risk)"
                 vol_variance_txt.color = ft.colors.RED_400
+
+            # --- FIXED: RE-BIND DYNAMIC DATA FIELDS FOR THE COHESION ENGINE ---
+            scr = m['trend_score']
+            gex_component_txt.value = f"{m['pt_gex']:.1f} / 3.0"
+            flow_component_txt.value = f"{m['pt_flow']:.1f} / 3.0"
+            price_component_txt.value = f"{m['pt_price']:.1f} / 3.0"
+            vol_component_txt.value = f"{m['pt_vol']:.1f} / 3.0"
+            
+            if scr <= 3.5:
+                cohesion_main_txt.value = f"{scr:.1f} / 12.0 (Strong Bearish)"
+                cohesion_main_txt.color = ft.colors.RED_700
+            elif scr <= 5.5:
+                cohesion_main_txt.value = f"{scr:.1f} / 12.0 (Mild Bearish)"
+                cohesion_main_txt.color = ft.colors.RED_400
+            elif scr <= 6.5:
+                cohesion_main_txt.value = f"{scr:.1f} / 12.0 (Neutral)"
+                cohesion_main_txt.color = ft.colors.GREY_400
+            elif scr <= 8.5:
+                cohesion_main_txt.value = f"{scr:.1f} / 12.0 (Mild Bullish)"
+                cohesion_main_txt.color = ft.colors.GREEN_300
+            else:
+                cohesion_main_txt.value = f"{scr:.1f} / 12.0 (Strong Bullish)"
+                cohesion_main_txt.color = ft.colors.GREEN_600
             
             time_now = datetime.now(timezone.utc)
             current_refresh_ts = time_now.strftime("%m-%d %H:%M")
@@ -676,13 +713,23 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt)]))),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("NET CALL INFLOWS", inflows_call_txt), ui_row_item("NET PUT INFLOWS", outflows_put_txt), ui_row_item("NET PREMIUM BIAS", net_flow_txt)]))) ,
 
         create_section_header("VOLATILITY VARIANCE ANALYSIS (10D)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("Implied Volatility (IV)", iv_metric_txt),
             ui_row_item("Realized Volatility (RV)", rv_metric_txt),
             ui_row_item("IV - RV Variation", vol_variance_txt)
+        ]))),
+
+        # --- FIXED: INTRADAY TREND COHESION CARD INSERTED EXACTLY BELOW THE VOLATILITY SPREAD ---
+        create_section_header("INTRADAY TREND COHESION SCORE"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([
+            ui_row_item("Unified Cohesion Index", cohesion_main_txt),
+            ui_row_item("↳ GEX Regime Component", gex_component_txt),
+            ui_row_item("↳ Options Tape Flow Component", flow_component_txt),
+            ui_row_item("↳ Price Structure Component", price_component_txt),
+            ui_row_item("↳ Volatility Setup Component", vol_component_txt)
         ]))),
 
         create_section_header("LARGE LOT BLOCKS DETECTOR"),
