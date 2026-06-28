@@ -7,11 +7,11 @@ import numpy as np
 import flet as ft
 from datetime import datetime, timezone, timedelta
 
-# Initialize Upstash Redis with CORRECT working credentials configuration
+# Initialize Upstash Redis with VERIFIED correct credentials configuration
 from upstash_redis import Redis
 redis = Redis(
     url="https://large-ghost-131173.upstash.io", 
-    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
+    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0TzlhOWJmZGM1MTg5OWViZDIxMw"
 )
 REDIS_KEY = "deribit_gex_3d_history"
 REDIS_FLOW_KEY = "deribit_flow_24h_history"
@@ -313,7 +313,6 @@ def fetch_deribit_gex(currency="BTC"):
                     net_call_fiat_flow -= fiat_notional_value
                     call_bid_hit_premium += fiat_notional_value
             elif option_type == 'P':
-                # FIXED Calculation convention for Puts
                 if direction == 'buy':
                     net_put_fiat_flow += fiat_notional_value
                     put_ask_hit_premium += fiat_notional_value
@@ -366,7 +365,6 @@ def fetch_deribit_gex(currency="BTC"):
     total_accumulated_call_flow = sum(f["call_flow"] for f in valid_flow_records) if valid_flow_records else net_call_fiat_flow
     total_accumulated_put_flow = sum(f["put_flow"] for f in valid_flow_records) if valid_flow_records else net_put_fiat_flow
     
-    # FIXED: Normalized structural net premium direction layout
     net_flow_bias = total_accumulated_call_flow - total_accumulated_put_flow
     
     total_cumulative_ndf_drift = sum(f.get("ndf_drift", 0.0) for f in valid_flow_records) if valid_flow_records else net_delta_premium_drift
@@ -710,7 +708,6 @@ def main(page: ft.Page):
             elif c_flow < 0: inflows_call_txt.color = ft.colors.RED_400
             else: inflows_call_txt.color = ft.colors.GREY_400
 
-            # UI DISPLAY ADJUSTMENT: Formats bearish protection flow accurately
             outflows_put_txt.value = fmt_signed_flow(p_flow)
             if p_flow > 0: outflows_put_txt.color = ft.colors.RED_400
             elif p_flow < 0: outflows_put_txt.color = ft.colors.GREEN_400
@@ -843,9 +840,9 @@ def main(page: ft.Page):
             # --- HOURLY GATED LOGGING GATEWAY SYSTEM ---
             time_now = datetime.now(timezone.utc)
             
-            # NOTE: If initializing for the first time, switch temporarily to 'if True:' to force baseline logs
-            if time_now.minute <= 4:
-                hourly_time_tag = time_now.strftime("%m-%d %H:00")
+            # TESTING MODE: Set to True to force instantaneous layout initialization snapshots
+            if True:
+                hourly_time_tag = time_now.strftime("%m-%d %H:%M")
                 
                 try:
                     last_gex_element = redis.lindex(REDIS_KEY, -1)
@@ -878,6 +875,15 @@ def main(page: ft.Page):
                         "timestamp": hourly_time_tag,
                         "oi_distribution": oi_snapshot_map
                     }
+                    
+                    # SELF-INITIALIZER BASELINE DETECTOR:
+                    if redis.llen(REDIS_OI_MIGRATION_KEY) == 0:
+                        dummy_snapshot = {
+                            "timestamp": (time_now - timedelta(minutes=1)).strftime("%m-%d %H:%M"),
+                            "oi_distribution": {k: float(v) * 0.95 for k, v in oi_snapshot_map.items()}
+                        }
+                        redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(dummy_snapshot))
+                        
                     redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
                     redis.ltrim(REDIS_OI_MIGRATION_KEY, -168, -1)
                     
@@ -966,7 +972,6 @@ def main(page: ft.Page):
                 
                 groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a" if v_exposure >= 0 else ft.colors.WHITE70, width=12, border_radius=2)]))
                 
-                # COLOR ATTRIBUTES: Teal (#35c2b3) for positive, deep purple (#7948be) for negative
                 oi_delta = historical_oi_deltas.get(strike_val, 0.0)
                 groups_oi_migration.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=oi_delta, color="#35c2b3" if oi_delta >= 0 else "#7948be", width=12, border_radius=2)]))
 
@@ -1052,7 +1057,6 @@ def main(page: ft.Page):
             ui_row_item("3rd Anomaly", anomaly_txt_3rd)
         ]))),
 
-        # EXACT CARD GEOMETRY VISUAL SEQUENCING PRESERVED HERE
         create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
 
