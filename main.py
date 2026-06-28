@@ -499,7 +499,7 @@ def main(page: ft.Page):
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     vanna_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
-    oi_migration_bottom_axis = ft.ChartAxis(labels=[], labels_size=24) # Bottom labels mapping for migration matrix
+    oi_migration_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     velocity_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     whale_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
@@ -892,7 +892,6 @@ def main(page: ft.Page):
             except Exception as ex:
                 print(f"Migration Parsing Fail: {ex}")
             
-            # Matrix unpacking elements updated (11 total variables assigned)
             groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_oi_migration, groups_velocity, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], [], [], float('inf'), -1
             
             max_abs_vanna_exposure = 0.0001
@@ -962,8 +961,9 @@ def main(page: ft.Page):
                 
                 groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a" if v_exposure >= 0 else ft.colors.WHITE70, width=12, border_radius=2)]))
                 
+                # COLOR UPGRADE: Positive migration bars assigned to #35c2b3, negative assigned to #7948be
                 oi_delta = historical_oi_deltas.get(strike_val, 0.0)
-                groups_oi_migration.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=oi_delta, color=ft.colors.CYAN_400 if oi_delta >= 0 else ft.colors.AMBER_400, width=12, border_radius=2)]))
+                groups_oi_migration.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=oi_delta, color="#35c2b3" if oi_delta >= 0 else "#7948be", width=12, border_radius=2)]))
 
                 groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=12, border_radius=2)]))
 
@@ -1038,7 +1038,6 @@ def main(page: ft.Page):
         create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
 
-        # PLACEMENT ASSIGNMENT: OI Migration card placed immediately below VEX chart card
         create_section_header("OPEN INTEREST MIGRATION ENGINE (HOURLY DELTA)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=oi_migration_bar_chart)),
 
