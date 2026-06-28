@@ -16,6 +16,7 @@ redis = Redis(
 REDIS_KEY = "deribit_gex_3d_history"
 REDIS_FLOW_KEY = "deribit_flow_24h_history"
 REDIS_WHALE_KEY = "deribit_whale_blocks_24h"
+REDIS_OI_MIGRATION_KEY = "deribit_oi_hourly_history"
 MAX_HISTORY_POINTS = 3500
 WHALE_THRESHOLD_USD = 250000.0
 
@@ -347,7 +348,7 @@ def fetch_deribit_gex(currency="BTC"):
                 "put_flow": round(net_put_fiat_flow, 2),
                 "ndf_drift": round(net_delta_premium_drift, 2)
             }
-            redis.rpush(REDIS_FLOW_KEY, json.dumps(snapshot))
+            redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
         all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
         valid_flow_records, records_to_remove_count = [], 0
         for record in all_flow_records:
@@ -474,7 +475,8 @@ def fetch_deribit_gex(currency="BTC"):
         "aggr_call_ask": call_ask_hit_premium, "aggr_call_bid": call_bid_hit_premium,
         "aggr_put_ask": put_ask_hit_premium, "aggr_put_bid": put_bid_hit_premium,
         "speed_current": net_speed_current, "speed_down_1000": net_speed_down_1000, "speed_up_1000": net_speed_up_1000,
-        "iv_direction": "EXPANDING" if iv_shift_multiplier > 0 else "CRUSHING"
+        "iv_direction": "EXPANDING" if iv_shift_multiplier > 0 else "CRUSHING",
+        "raw_option_dataframe": bucket_data_1m
     }
 
 def fmt_gex(val):
@@ -497,6 +499,7 @@ def main(page: ft.Page):
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     vanna_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
+    oi_migration_bottom_axis = ft.ChartAxis(labels=[], labels_size=24) # Bottom labels mapping for migration matrix
     velocity_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     whale_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
@@ -593,6 +596,13 @@ def main(page: ft.Page):
 
     vanna_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=vanna_bottom_axis,
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        animate=True, interactive=True, height=240
+    )
+
+    oi_migration_bar_chart = ft.BarChart(
+        bar_groups=[], bottom_axis=oi_migration_bottom_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         animate=True, interactive=True, height=240
@@ -811,13 +821,13 @@ def main(page: ft.Page):
             flow_6h_txt.value = format_horizon_text(total_6h_flow)
             flow_6h_txt.color = ft.colors.GREEN_400 if total_6h_flow >= 0 else ft.colors.RED_400
 
-            drift_val = m['ndf_drift_total']
-            ndf_drift_metric_txt.value = fmt_signed_flow(drift_val)
-            if drift_val > 0:
+            chart_drift_val = m['ndf_drift_total']
+            ndf_drift_metric_txt.value = fmt_signed_flow(chart_drift_val)
+            if chart_drift_val > 0:
                 ndf_drift_metric_txt.color = ft.colors.GREEN_400
                 ndf_structural_signal_txt.value = "Aggressive Delta Accumulation"
                 ndf_structural_signal_txt.color = ft.colors.GREEN_400
-            elif drift_val < 0:
+            elif chart_drift_val < 0:
                 ndf_drift_metric_txt.color = ft.colors.RED_400
                 ndf_structural_signal_txt.value = "Persistent Delta Distribution"
                 ndf_structural_signal_txt.color = ft.colors.RED_400
@@ -826,42 +836,87 @@ def main(page: ft.Page):
                 ndf_structural_signal_txt.value = "Neutral Absorption"
                 ndf_structural_signal_txt.color = ft.colors.GREY_400
             
+            # --- HOURLY GATED LOGGING GATEWAY SYSTEM ---
             time_now = datetime.now(timezone.utc)
-            current_refresh_ts = time_now.strftime("%m-%d %H:%M")
-            try:
-                last_gex_element = redis.lindex(REDIS_KEY, -1)
-                is_gex_dup = False
-                if last_gex_element:
-                    try:
-                        logged_data = json.loads(last_gex_element)
-                        logged_ts = logged_data.get("timestamp") or datetime.fromtimestamp(logged_data.get("epoch"), tz=timezone.utc).strftime("%m-%d %H:%M")
-                        if logged_ts == current_refresh_ts: is_gex_dup = True
-                    except Exception: pass
-                if not is_gex_dup:
-                    snapshot = {"timestamp": current_refresh_ts, "gex": round(m['net_gex_1m'], 2)}
+            
+            if time_now.minute <= 4:
+                hourly_time_tag = time_now.strftime("%m-%d %H:00")
+                
+                try:
+                    last_gex_element = redis.lindex(REDIS_KEY, -1)
+                    if last_gex_element:
+                        try:
+                            last_data = json.loads(last_gex_element)
+                            if last_data.get("timestamp") == hourly_time_tag:
+                                redis.rpop(REDIS_KEY)
+                        except Exception: pass
+                    
+                    snapshot = {"timestamp": hourly_time_tag, "gex": round(m['net_gex_1m'], 2)}
                     redis.rpush(REDIS_KEY, json.dumps(snapshot))
                     redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
-            except Exception as ex: print(f"Cloud Logging Interrupted: {ex}")
+                    
+                    last_oi_element = redis.lindex(REDIS_OI_MIGRATION_KEY, -1)
+                    if last_oi_element:
+                        try:
+                            last_oi_data = json.loads(last_oi_element)
+                            if last_oi_data.get("timestamp") == hourly_time_tag:
+                                redis.rpop(REDIS_OI_MIGRATION_KEY)
+                        except Exception: pass
+                        
+                    raw_oi_dataframe = m["raw_option_dataframe"]
+                    oi_snapshot_map = {}
+                    if not raw_oi_dataframe.empty:
+                        oi_snapshot_map = raw_oi_dataframe['oi'].to_dict()
+                        oi_snapshot_map = {str(k): float(v) for k, v in oi_snapshot_map.items()}
+                        
+                    oi_history_snapshot = {
+                        "timestamp": hourly_time_tag,
+                        "oi_distribution": oi_snapshot_map
+                    }
+                    redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
+                    redis.ltrim(REDIS_OI_MIGRATION_KEY, -168, -1)
+                    
+                except Exception as ex: 
+                    print(f"Hourly Gated Database Log Failure: {ex}")
+
+            # --- HISTORICAL OI MIGRATION PARSING ENGINE ---
+            historical_oi_deltas = {}
+            try:
+                oi_snapshots = redis.lrange(REDIS_OI_MIGRATION_KEY, -2, -1)
+                if len(oi_snapshots) >= 2:
+                    t0_data = json.loads(oi_snapshots[0]).get("oi_distribution", {})
+                    t1_data = json.loads(oi_snapshots[1]).get("oi_distribution", {})
+                    
+                    for k_strike in t1_data.keys():
+                        historical_oi_deltas[float(k_strike)] = float(t1_data[k_strike]) - float(t0_data.get(k_strike, 0.0))
+            except Exception as ex:
+                print(f"Migration Parsing Fail: {ex}")
             
-            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_velocity, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], [], float('inf'), -1
+            # Matrix unpacking elements updated (11 total variables assigned)
+            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_oi_migration, groups_velocity, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], [], [], float('inf'), -1
             
-            # Dynamic peak tracking variables for symmetric centering 
             max_abs_vanna_exposure = 0.0001
+            max_abs_oi_delta = 0.0001
 
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist: min_dist, spot_index = dist, item['index']
                 
-                # Sift out VEX maximum peak thresholds
                 if abs(item['vanna_exposure']) > max_abs_vanna_exposure:
                     max_abs_vanna_exposure = abs(item['vanna_exposure'])
+                    
+                stk = item['strike']
+                oi_change = historical_oi_deltas.get(stk, 0.0)
+                if abs(oi_change) > max_abs_oi_delta:
+                    max_abs_oi_delta = abs(oi_change)
             
-            # Pad headroom slightly
             vanna_exposure_bound = max_abs_vanna_exposure * 1.15
-
-            # Apply perfect mirror boundaries to center the zero line exactly in the middle
             vanna_bar_chart.min_y = -vanna_exposure_bound
             vanna_bar_chart.max_y = vanna_exposure_bound
+
+            oi_migration_bound = max_abs_oi_delta * 1.15
+            oi_migration_bar_chart.min_y = -oi_migration_bound
+            oi_migration_bar_chart.max_y = oi_migration_bound
             
             valid_ivs = [item['iv_skew'] for item in m['chart_data'] if item['iv_skew'] > 0]
             max_iv = max_iv if (max_iv := max(valid_ivs, default=100.0)) > 0 else 100.0
@@ -905,9 +960,11 @@ def main(page: ft.Page):
                 groups_net_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_1m, color="#bab7ab" if val_1m >= 0 else "#1661b4", width=12, border_radius=2)]))
                 groups_abs_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_1m, color="#ab47bc", width=12, border_radius=2)]))
                 
-                # COLOR UPDATE: Positive exposure uses coral ("#d26e5a"), Negative values colorized to pure Ivory White ("WHITE70")
                 groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a" if v_exposure >= 0 else ft.colors.WHITE70, width=12, border_radius=2)]))
                 
+                oi_delta = historical_oi_deltas.get(strike_val, 0.0)
+                groups_oi_migration.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=oi_delta, color=ft.colors.CYAN_400 if oi_delta >= 0 else ft.colors.AMBER_400, width=12, border_radius=2)]))
+
                 groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=12, border_radius=2)]))
 
                 groups_whale.append(ft.BarChartGroup(
@@ -939,6 +996,9 @@ def main(page: ft.Page):
             
             vanna_bar_chart.bar_groups = groups_vanna
             vanna_bottom_axis.labels = list(new_labels)
+
+            oi_migration_bar_chart.bar_groups = groups_oi_migration
+            oi_migration_bottom_axis.labels = list(new_labels)
 
             velocity_bar_chart.bar_groups = groups_velocity
             velocity_bottom_axis.labels = list(new_labels)
@@ -977,6 +1037,10 @@ def main(page: ft.Page):
         
         create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
+
+        # PLACEMENT ASSIGNMENT: OI Migration card placed immediately below VEX chart card
+        create_section_header("OPEN INTEREST MIGRATION ENGINE (HOURLY DELTA)"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=oi_migration_bar_chart)),
 
         create_section_header("INTRADAY GAMMA VELOCITY PROFILE (VOLUME / OI)"),
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
