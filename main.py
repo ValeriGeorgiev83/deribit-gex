@@ -497,7 +497,6 @@ def main(page: ft.Page):
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     vanna_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
-    vanna_flow_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     velocity_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     whale_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
@@ -599,13 +598,6 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     )
 
-    vanna_flow_bar_chart = ft.BarChart(
-        bar_groups=[], bottom_axis=vanna_flow_bottom_axis,
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        animate=True, interactive=True, height=240
-    )
-
     velocity_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=velocity_bottom_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
@@ -620,7 +612,7 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=260
     )
 
-    iv_skew_bar_chart = ft.BarChart(
+    id_skew_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=iv_bottom_axis,
         left_axis=iv_left_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
@@ -851,31 +843,25 @@ def main(page: ft.Page):
                     redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
             except Exception as ex: print(f"Cloud Logging Interrupted: {ex}")
             
-            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_vanna_flow, groups_velocity, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], [], [], float('inf'), -1
+            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_velocity, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], [], float('inf'), -1
             
-            # Dynamic peak boundary detection variables
+            # Dynamic peak tracking variables for symmetric centering 
             max_abs_vanna_exposure = 0.0001
-            max_abs_vanna_flow = 0.0001
 
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist: min_dist, spot_index = dist, item['index']
                 
-                # Sift out global outlier boundaries for symmetry pinning
+                # Sift out VEX maximum peak thresholds
                 if abs(item['vanna_exposure']) > max_abs_vanna_exposure:
                     max_abs_vanna_exposure = abs(item['vanna_exposure'])
-                if abs(item['vanna_flow']) > max_abs_vanna_flow:
-                    max_abs_vanna_flow = abs(item['vanna_flow'])
             
-            # Scale slightly to guarantee safety padding headroom on chart ceilings
+            # Pad headroom slightly
             vanna_exposure_bound = max_abs_vanna_exposure * 1.15
-            vanna_flow_bound = max_abs_vanna_flow * 1.15
 
-            # Apply perfect inverse reflection bounds down to layout widgets
+            # Apply perfect mirror boundaries to center the zero line exactly in the middle
             vanna_bar_chart.min_y = -vanna_exposure_bound
             vanna_bar_chart.max_y = vanna_exposure_bound
-            vanna_flow_bar_chart.min_y = -vanna_flow_bound
-            vanna_flow_bar_chart.max_y = vanna_flow_bound
             
             valid_ivs = [item['iv_skew'] for item in m['chart_data'] if item['iv_skew'] > 0]
             max_iv = max_iv if (max_iv := max(valid_ivs, default=100.0)) > 0 else 100.0
@@ -885,8 +871,8 @@ def main(page: ft.Page):
             ceil_y = math.ceil(max_iv / 10.0) * 10.0
             if ceil_y == floor_y: ceil_y += 10.0
             
-            iv_skew_bar_chart.min_y = floor_y
-            iv_skew_bar_chart.max_y = ceil_y
+            id_skew_bar_chart.min_y = floor_y
+            id_skew_bar_chart.max_y = ceil_y
 
             y_iv_labels = []
             curr_y = floor_y
@@ -911,17 +897,16 @@ def main(page: ft.Page):
 
             for item in m['chart_data']:
                 strike_val, is_spot = item['strike'], (item['index'] == spot_index)
-                val_3d, abs_3d, val_1m, abs_1m, v_exposure, v_flow, vel_ratio, iv_val_item = item['gex_3d'], item['abs_gex_3d'], item['gex_1m'], item['abs_gex_1m'], item['vanna_exposure'], item['vanna_flow'], item['velocity_ratio'], item['iv_skew']
+                val_3d, abs_3d, val_1m, abs_1m, v_exposure, vel_ratio, iv_val_item = item['gex_3d'], item['abs_gex_3d'], item['gex_1m'], item['abs_gex_1m'], item['vanna_exposure'], item['velocity_ratio'], item['iv_skew']
                 w_bull, w_bear = item['whale_bullish'], item['whale_bearish']
 
                 groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color=ft.colors.GREEN_400 if val_3d >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
                 groups_abs_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_3d, color=ft.colors.YELLOW, width=12, border_radius=2)]))
                 groups_net_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_1m, color="#bab7ab" if val_1m >= 0 else "#1661b4", width=12, border_radius=2)]))
                 groups_abs_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_1m, color="#ab47bc", width=12, border_radius=2)]))
-                groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a", width=12, border_radius=2)]))
                 
-                # Symmetrical flow rod generation vectors
-                groups_vanna_flow.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_flow, color="#d26e5a" if v_flow >= 0 else ft.colors.WHITE70, width=12, border_radius=2)]))
+                # COLOR UPDATE: Positive exposure uses coral ("#d26e5a"), Negative values colorized to pure Ivory White ("WHITE70")
+                groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a" if v_exposure >= 0 else ft.colors.WHITE70, width=12, border_radius=2)]))
                 
                 groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=12, border_radius=2)]))
 
@@ -955,16 +940,13 @@ def main(page: ft.Page):
             vanna_bar_chart.bar_groups = groups_vanna
             vanna_bottom_axis.labels = list(new_labels)
 
-            vanna_flow_bar_chart.bar_groups = groups_vanna_flow
-            vanna_flow_bottom_axis.labels = list(new_labels)
-
             velocity_bar_chart.bar_groups = groups_velocity
             velocity_bottom_axis.labels = list(new_labels)
 
             whale_bar_chart.bar_groups = groups_whale
             whale_bottom_axis.labels = list(new_labels)
 
-            iv_skew_bar_chart.bar_groups = iv_bar_groups
+            id_skew_bar_chart.bar_groups = iv_bar_groups
             iv_bottom_axis.labels = list(new_labels)
             
             page.update()
@@ -996,9 +978,6 @@ def main(page: ft.Page):
         create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
 
-        create_section_header("REAL-TIME VANNA HEDGING FLOW PROFILE (EXPOSURE x IV VELOCITY)"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_flow_bar_chart)),
-
         create_section_header("INTRADAY GAMMA VELOCITY PROFILE (VOLUME / OI)"),
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
             velocity_bar_chart,
@@ -1019,7 +998,7 @@ def main(page: ft.Page):
         
         create_section_header("IV SKEW ANALYSIS (7D)"),
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
-            iv_skew_bar_chart,
+            id_skew_bar_chart,
             ft.Container(height=10),
             ui_row_item("Current 25D strike Skew", skew_25d_txt)
         ]))),
