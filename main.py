@@ -11,14 +11,12 @@ from datetime import datetime, timezone, timedelta
 from upstash_redis import Redis
 redis = Redis(
     url="https://large-ghost-131173.upstash.io", 
-    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
+    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0TzlhOWJmZGM1MTg5OWViZDIxMw"
 )
-REDIS_KEY = "deribit_gex_3d_history"
 REDIS_FLOW_KEY = "deribit_flow_24h_history"
 REDIS_WHALE_KEY = "deribit_whale_blocks_24h"
 REDIS_OI_MIGRATION_KEY = "deribit_oi_hourly_history"
-MAX_HISTORY_POINTS = 3500
-WHALE_THRESHOLD_USD = 250000.0
+WHALE_THRESHOLD_USD = 500000.0
 
 # Keep track of the previous ATM IV to find live volatility direction velocity
 last_known_atm_iv = [50.0] 
@@ -838,22 +836,11 @@ def main(page: ft.Page):
             # --- HOURLY GATED LOGGING GATEWAY SYSTEM ---
             time_now = datetime.now(timezone.utc)
             
-            if True:
-                hourly_time_tag = time_now.strftime("%m-%d %H:%M")
+            # SECURE HOURLY GATEWAY RESTORED: Only writes to Upstash if inside the top 4 minutes of an hour
+            if time_now.minute <= 4:
+                hourly_time_tag = time_now.strftime("%m-%d %H:00")
                 
                 try:
-                    last_gex_element = redis.lindex(REDIS_KEY, -1)
-                    if last_gex_element:
-                        try:
-                            last_data = json.loads(last_gex_element)
-                            if last_data.get("timestamp") == hourly_time_tag:
-                                redis.rpop(REDIS_KEY)
-                        except Exception: pass
-                    
-                    snapshot = {"timestamp": hourly_time_tag, "gex": round(m['net_gex_1m'], 2)}
-                    redis.rpush(REDIS_KEY, json.dumps(snapshot))
-                    redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
-                    
                     last_oi_element = redis.lindex(REDIS_OI_MIGRATION_KEY, -1)
                     if last_oi_element:
                         try:
@@ -875,7 +862,7 @@ def main(page: ft.Page):
                     
                     if redis.llen(REDIS_OI_MIGRATION_KEY) == 0:
                         dummy_snapshot = {
-                            "timestamp": (time_now - timedelta(minutes=1)).strftime("%m-%d %H:%M"),
+                            "timestamp": (time_now - timedelta(hours=1)).strftime("%m-%d %H:00"),
                             "oi_distribution": {k: float(v) * 0.95 for k, v in oi_snapshot_map.items()}
                         }
                         redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(dummy_snapshot))
