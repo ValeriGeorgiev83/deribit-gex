@@ -947,7 +947,7 @@ def main(page: ft.Page):
             if len(top_anomalies) >= 2:
                 anomaly_txt_2nd.value = f"${top_anomalies[1]['strike']/1000:.0f}k Strike ({top_anomalies[1]['velocity_ratio']:.1f}%)"
             if len(top_anomalies) >= 3:
-                anomaly_txt_3rd.value = f"${top_anomalies[2]['strike']/1000:.0f}k Strike ({top_anomalies[2]['velocity_ratio']:.1f}%)"
+                anomaly_txt_2nd.value = f"${top_anomalies[2]['strike']/1000:.0f}k Strike ({top_anomalies[2]['velocity_ratio']:.1f}%)"
 
             for item in m['chart_data']:
                 strike_val, is_spot = item['strike'], (item['index'] == spot_index)
@@ -1028,13 +1028,6 @@ def main(page: ft.Page):
             ui_row_item("Put Concetration (P2)", p2_txt)
         ]))),
 
-        create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
-
-        create_section_header("OPEN INTEREST MIGRATION ENGINE (HOURLY DELTA)"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=oi_migration_bar_chart)),
-
-        # STRUCTURAL PLACEMENT: Important Levels shifted directly above the 1M Net Gamma card
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
 
@@ -1052,6 +1045,13 @@ def main(page: ft.Page):
             ui_row_item("2nd Anomaly", anomaly_txt_2nd),
             ui_row_item("3rd Anomaly", anomaly_txt_3rd)
         ]))),
+
+        # CORRECTED SEQUENCE: VEX card and Hour Delta Migration card successfully placed below Intraday Velocity
+        create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
+
+        create_section_header("OPEN INTEREST MIGRATION ENGINE (HOURLY DELTA)"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=oi_migration_bar_chart)),
 
         create_section_header("TOTAL GAMMA EXPOSURE (1M)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
