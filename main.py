@@ -330,27 +330,27 @@ def fetch_deribit_gex(currency="BTC"):
         print(f"Option Tape Fetch Interrupted: {ex}")
 
     time_now = datetime.now(timezone.utc)
-    current_ts = time_now.strftime("%m-%d %H:%M")
+    
+    # ADDED SECOND TRACKING: Forces every single refresh to generate a completely unique key line in Upstash
+    current_ts = time_now.strftime("%m-%d %H:%M:%S")
 
     try:
-        last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
-        is_duplicate = False
-        if last_logged_element:
-            last_logged_data = json.loads(last_logged_element)
-            if last_logged_data.get("timestamp") == current_ts: is_duplicate = True
-        if not is_duplicate:
-            flow_snapshot = {
-                "timestamp": current_ts, 
-                "call_flow": round(net_call_fiat_flow, 2), 
-                "put_flow": round(net_put_fiat_flow, 2),
-                "ndf_drift": round(net_delta_premium_drift, 2)
-            }
-            redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
+        flow_snapshot = {
+            "timestamp": current_ts, 
+            "call_flow": round(net_call_fiat_flow, 2), 
+            "put_flow": round(net_put_fiat_flow, 2),
+            "ndf_drift": round(net_delta_premium_drift, 2)
+        }
+        redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
+        
         all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
         valid_flow_records, records_to_remove_count = [], 0
         for record in all_flow_records:
             f_data = json.loads(record)
-            rec_time = datetime.strptime(f"{time_now.year}-{f_data['timestamp']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+            try:
+                rec_time = datetime.strptime(f"{time_now.year}-{f_data['timestamp']}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            except Exception:
+                rec_time = datetime.strptime(f"{time_now.year}-{f_data['timestamp']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
             if rec_time > time_now: rec_time = rec_time.replace(year=time_now.year - 1)
             if (time_now - rec_time).total_seconds() <= 86400.0: valid_flow_records.append(f_data)
             else: records_to_remove_count += 1
@@ -836,9 +836,8 @@ def main(page: ft.Page):
             # --- HOURLY GATED LOGGING GATEWAY SYSTEM ---
             time_now = datetime.now(timezone.utc)
             
-            # SECURE HOURLY GATEWAY RESTORED: Only writes to Upstash if inside the top 4 minutes of an hour
             if time_now.minute <= 4:
-                hourly_time_tag = time_now.strftime("%m-%d %H:00")
+                hourly_time_tag = time_now.strftime("%m-%d %H:%M")
                 
                 try:
                     last_oi_element = redis.lindex(REDIS_OI_MIGRATION_KEY, -1)
@@ -862,7 +861,7 @@ def main(page: ft.Page):
                     
                     if redis.llen(REDIS_OI_MIGRATION_KEY) == 0:
                         dummy_snapshot = {
-                            "timestamp": (time_now - timedelta(hours=1)).strftime("%m-%d %H:00"),
+                            "timestamp": (time_now - timedelta(hours=1)).strftime("%m-%d %H:%M"),
                             "oi_distribution": {k: float(v) * 0.95 for k, v in oi_snapshot_map.items()}
                         }
                         redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(dummy_snapshot))
