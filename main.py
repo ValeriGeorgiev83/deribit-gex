@@ -39,7 +39,6 @@ def calculate_speed_for_option(spot, strike, iv, t_days, oi, option_type):
         gamma = pdf / (spot * iv * math.sqrt(t))
         speed_per_contract = (-gamma / spot) * (1.0 + (d1 / (iv * math.sqrt(t))))
         
-        # FIXED: Multiplied by 1,000,000 to scale the micro-decimals into readable macro-units
         footprint = oi * speed_per_contract * 0.01 * 1000000.0
         return -footprint if option_type == 'P' else footprint
     except Exception:
@@ -87,8 +86,8 @@ def fetch_deribit_gex(currency="BTC"):
     net_charm_accumulator = 0.0
     
     net_speed_current = 0.0
-    net_speed_down_500 = 0.0
-    net_speed_up_500 = 0.0
+    net_speed_down_1000 = 0.0
+    net_speed_up_1000 = 0.0
     
     for item in data_list:
         name = item['instrument_name']
@@ -152,10 +151,10 @@ def fetch_deribit_gex(currency="BTC"):
             
         net_charm_accumulator += item_charm_exposure
         
-        # Compile dynamic tracking snapshots
+        # FIXED: Structural modifications to shift stress zones to +/- 1000 point parameters
         net_speed_current += calculate_speed_for_option(spot_price, strike, iv, days_to_expiry, oi, option_type)
-        net_speed_down_500 += calculate_speed_for_option(spot_price - 500.0, strike, iv, days_to_expiry, oi, option_type)
-        net_speed_up_500 += calculate_speed_for_option(spot_price + 500.0, strike, iv, days_to_expiry, oi, option_type)
+        net_speed_down_1000 += calculate_speed_for_option(spot_price - 1000.0, strike, iv, days_to_expiry, oi, option_type)
+        net_speed_up_1000 += calculate_speed_for_option(spot_price + 1000.0, strike, iv, days_to_expiry, oi, option_type)
         
         parsed_options.append({
             'strike': strike, 
@@ -464,7 +463,7 @@ def fetch_deribit_gex(currency="BTC"):
         "ndf_drift_total": total_cumulative_ndf_drift,
         "aggr_call_ask": call_ask_hit_premium, "aggr_call_bid": call_bid_hit_premium,
         "aggr_put_ask": put_ask_hit_premium, "aggr_put_bid": put_bid_hit_premium,
-        "speed_current": net_speed_current, "speed_down_500": net_speed_down_500, "speed_up_500": net_speed_up_500
+        "speed_current": net_speed_current, "speed_down_1000": net_speed_down_1000, "speed_up_1000": net_speed_up_1000
     }
 
 def fmt_gex(val):
@@ -531,6 +530,7 @@ def main(page: ft.Page):
     rv_metric_txt = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
     vol_variance_txt = ft.Text("0.0% (Neutral)", size=14, weight=ft.FontWeight.BOLD)
 
+    # --- MODIFIED: RENAMED DISPLAY STRINGS TO HIGHLIGHT THE $1,000 HORIZONS ---
     speed_curr_txt = ft.Text("0.00", size=14, weight=ft.FontWeight.W_600)
     speed_down_txt = ft.Text("0.00", size=14, weight=ft.FontWeight.W_600)
     speed_up_txt = ft.Text("0.00", size=14, weight=ft.FontWeight.W_600)
@@ -717,7 +717,8 @@ def main(page: ft.Page):
                 vol_variance_txt.value = f"{variance_spread:+.1f}% (Sideways Risk)"
                 vol_variance_txt.color = ft.colors.RED_400
 
-            sp_curr, sp_down, sp_up = m['speed_current'], m['speed_down_500'], m['speed_up_500']
+            # --- FIXED: BIND RECONFIGURED ACCELERATION PROFILES ---
+            sp_curr, sp_down, sp_up = m['speed_current'], m['speed_down_1000'], m['speed_up_1000']
             speed_curr_txt.value = f"{sp_curr:+.4f}"
             speed_down_txt.value = f"{sp_down:+.4f}"
             speed_up_txt.value = f"{sp_up:+.4f}"
@@ -966,11 +967,12 @@ def main(page: ft.Page):
             ui_row_item("IV - RV Variation", vol_variance_txt)
         ]))),
 
+        # --- MODIFIED: RENAMED LABELS TO REFLECT PERFECT $1K ALIGNMENT ---
         create_section_header("DEALER SPOT GAMMA ACCELERATION (SPEED)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("Current Spot Speed Engine", speed_curr_txt),
-            ui_row_item("Predictive Stress: Spot -$500 Slippage", speed_down_txt),
-            ui_row_item("Predictive Stress: Spot +$500 Rally", speed_up_txt),
+            ui_row_item("Predictive Stress: Spot -$1000 Slippage", speed_down_txt),
+            ui_row_item("Predictive Stress: Spot +$1000 Rally", speed_up_txt),
             ft.Divider(height=10, color=ft.colors.GREY_800),
             ui_row_item("Hedging Volatility Regime", speed_regime_txt)
         ]))),
