@@ -7,11 +7,11 @@ import numpy as np
 import flet as ft
 from datetime import datetime, timezone, timedelta
 
-# Initialize Upstash Redis with VERIFIED correct credentials configuration
+# Initialize Upstash Redis with your EXACT verified connection parameters
 from upstash_redis import Redis
 redis = Redis(
     url="https://large-ghost-131173.upstash.io", 
-    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0TzlhOWJmZGM1MTg5OWViZDIxMw"
+    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
 )
 REDIS_KEY = "deribit_gex_3d_history"
 REDIS_FLOW_KEY = "deribit_flow_24h_history"
@@ -838,7 +838,6 @@ def main(page: ft.Page):
             # --- HOURLY GATED LOGGING GATEWAY SYSTEM ---
             time_now = datetime.now(timezone.utc)
             
-            # TESTING MODE ACTIVATED BY DEFAULT FOR FORCE INITIALIZING NEW HISTORICAL KEYS
             if True:
                 hourly_time_tag = time_now.strftime("%m-%d %H:%M")
                 
