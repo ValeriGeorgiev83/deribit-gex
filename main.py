@@ -161,7 +161,6 @@ def fetch_deribit_gex(currency="BTC"):
             'oi': oi, 
             'volume': volume, 
             'gex': gex_value,
-            'abs_gex': abs(gex_value),
             'vanna': vanna_exposure_footprint,
             'iv': iv * 100.0, 
             'days_to_expiry': days_to_expiry
@@ -173,31 +172,6 @@ def fetch_deribit_gex(currency="BTC"):
     df_1m = base_df[base_df['days_to_expiry'] <= 30.0]
     df_3d = base_df[base_df['days_to_expiry'] <= 3.0]
     if df_3d.empty: df_3d = df_1m
-
-    # --- UPDATED: ISOLATED 0DTE PINNING ENGINE ---
-    df_0dte = base_df[base_df['days_to_expiry'] <= 1.0]
-    # Fallback to the short-term chain if the 0DTE matrix is cleared near settlement hours
-    if df_0dte.empty:
-        df_0dte = df_3d
-
-    pin_strike = spot_price
-    pin_prob_pct = 0.0
-    
-    if not df_0dte.empty:
-        gamma_grouped_0dte = df_0dte.groupby('strike')['abs_gex'].sum()
-        if not gamma_grouped_0dte.empty:
-            pin_strike = float(gamma_grouped_0dte.idxmax())
-            target_slice = df_0dte[df_0dte['strike'] == pin_strike]
-            avg_t_days = target_slice['days_to_expiry'].mean()
-            avg_iv_raw = target_slice['iv'].mean() / 100.0
-            
-            if avg_t_days > 0 and avg_iv_raw > 0:
-                t_years = max(avg_t_days, 0.005) / 365.0
-                price_distance = abs(math.log(spot_price / pin_strike))
-                denom = avg_iv_raw * math.sqrt(t_years)
-                prob_density = native_norm_pdf(price_distance / denom) / denom if denom > 0 else 0.0
-                # Scale up probability tracking mechanics for 0DTE hyper-proximity metrics
-                pin_prob_pct = min(max(prob_density * 0.05, 1.0), 98.5)
 
     # --- GEX MATRICES ---
     call_df_1m = df_1m[df_1m['type'] == 'C']
@@ -486,8 +460,7 @@ def fetch_deribit_gex(currency="BTC"):
         "ndf_drift_total": total_cumulative_ndf_drift,
         "aggr_call_ask": call_ask_hit_premium, "aggr_call_bid": call_bid_hit_premium,
         "aggr_put_ask": put_ask_hit_premium, "aggr_put_bid": put_bid_hit_premium,
-        "speed_current": net_speed_current, "speed_down_1000": net_speed_down_1000, "speed_up_1000": net_speed_up_1000,
-        "pinning_level": pin_strike, "pinning_probability": pin_prob_pct
+        "speed_current": net_speed_current, "speed_down_1000": net_speed_down_1000, "speed_up_1000": net_speed_up_1000
     }
 
 def fmt_gex(val):
@@ -539,9 +512,6 @@ def main(page: ft.Page):
     breakout_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_ACCENT)
     res_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_300)
     sup_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.PINK_400)
-
-    pin_level_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_ACCENT)
-    pin_prob_txt = ft.Text("0.0%", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.CYAN_200)
     
     inflows_call_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
     outflows_put_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
@@ -706,9 +676,6 @@ def main(page: ft.Page):
             breakout_txt.value = f"${m['breakout']:,.0f}"
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}"
-
-            pin_level_txt.value = f"${m['pinning_level']:,.0f}"
-            pin_prob_txt.value = f"{m['pinning_probability']:.1f}%"
             
             c_flow, p_flow, net_bias = m['call_inflow'], m['put_inflow'], m['net_flow']
             inflows_call_txt.value = fmt_signed_flow(c_flow)
@@ -1005,15 +972,7 @@ def main(page: ft.Page):
         ]))),
         
         create_section_header("IMPORTANT LEVELS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([
-            ui_row_item("Max Pain", pain_txt), 
-            ui_row_item("Flip Zone", flip_txt), 
-            ui_row_item("Breakout Price", breakout_txt), 
-            ui_row_item("Resistance Level", res_txt), 
-            ui_row_item("Support Level", sup_txt),
-            ui_row_item("Max Pinning Level", pin_level_txt),
-            ui_row_item("Pinning Probability", pin_prob_txt)
-        ]))),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
@@ -1064,6 +1023,7 @@ def main(page: ft.Page):
 
         create_section_header("DEALER REAL-TIME HEDGING FLOW ESTIMATOR"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
+            # RENAME FIX: Cleaned layout labels down to clean interval trackers
             ui_row_item("Next 1H", flow_1h_txt),
             ui_row_item("Next 3H", flow_3h_txt),
             ui_row_item("Next 6H", flow_6h_txt)
