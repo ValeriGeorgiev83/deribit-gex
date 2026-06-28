@@ -465,7 +465,7 @@ def fetch_deribit_gex(currency="BTC"):
         "call_gex_3d": call_gex_3d, "put_gex_3d": put_gex_3d, "net_gex_3d": net_gex_3d, "call_weight_3d": call_weight_pct_3d,
         "max_pain": max_pain_level, "flip": flip_level, "breakout": breakout_price, 
         "resistance": resistance_level, "support": support_level, "call_inflow": total_accumulated_call_flow, 
-        "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "chart_data": m if 'chart_matrix' in locals() else chart_matrix,
+        "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "chart_data": chart_matrix, # BUG FIXED HERE
         "skew_25d": skew_25d_val, "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level,
         "implied_vol": atm_iv, "realized_vol": realized_vol_10d_val,
         "trend_score": total_cohesion_points, "pt_gex": pt_gex, "pt_flow": pt_flow, "pt_price": pt_price, "pt_vol": pt_vol,
@@ -899,7 +899,7 @@ def main(page: ft.Page):
                 groups_abs_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_1m, color="#ab47bc", width=12, border_radius=2)]))
                 groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a", width=12, border_radius=2)]))
                 
-                # AESTHETIC FIX: Positive flows keep original exposure color ("#d26e5a"), Negative flows render in clean Ivory White (WHITE70)
+                # Positive flows keep original exposure color ("#d26e5a"), Negative flows render in clean Ivory White (WHITE70)
                 groups_vanna_flow.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_flow, color="#d26e5a" if v_flow >= 0 else ft.colors.WHITE70, width=12, border_radius=2)]))
                 
                 groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=12, border_radius=2)]))
