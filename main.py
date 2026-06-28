@@ -532,7 +532,6 @@ def main(page: ft.Page):
     speed_up_txt = ft.Text("0.00", size=14, weight=ft.FontWeight.W_600)
     speed_regime_txt = ft.Text("Stable Neutral", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREEN_400)
 
-    # --- NEW: INITIALIZE HOURLY TIME-HORIZON HEDGING OUTPUT BLOCKS ---
     flow_1h_txt = ft.Text("0.00 BTC", size=14, weight=ft.FontWeight.BOLD)
     flow_3h_txt = ft.Text("0.00 BTC", size=14, weight=ft.FontWeight.BOLD)
     flow_6h_txt = ft.Text("0.00 BTC", size=14, weight=ft.FontWeight.BOLD)
@@ -767,31 +766,24 @@ def main(page: ft.Page):
                 charm_bias_txt.value = "Stable Neutral"
                 charm_bias_txt.color = ft.colors.GREY_400
 
-            # --- CALCULATE & BIND TIME-HORIZON FLOW PREDICTOR MODEL VALUES ---
-            # 1. Charm Drift (Deterministic linear time erosion)
             charm_1h = c_flow_val * 1.0
             charm_3h = c_flow_val * 3.0
             charm_6h = c_flow_val * 6.0
 
-            # 2. Gamma Variance Pressure (1-Sigma Volatility movement bounds)
-            # Volatility variance for 1, 3, 6 hour spans
             std_dev_1h = (iv_val / 100.0) * math.sqrt(1.0 / 8760.0)
             std_dev_3h = (iv_val / 100.0) * math.sqrt(3.0 / 8760.0)
             std_dev_6h = (iv_val / 100.0) * math.sqrt(6.0 / 8760.0)
 
-            # Convert options-implied total 3D chain gamma into raw contract units
             gex_contracts_3d = m['net_gex_3d'] / m['spot']
 
             gamma_press_1h = gex_contracts_3d * std_dev_1h
             gamma_press_3h = gex_contracts_3d * std_dev_3h
             gamma_press_6h = gex_contracts_3d * std_dev_6h
 
-            # Aggregate total predictive rehedging flows
             total_1h_flow = charm_1h + gamma_press_1h
             total_3h_flow = charm_3h + gamma_press_3h
             total_6h_flow = charm_6h + gamma_press_6h
 
-            # Format outputs elegantly to reflect directionality
             def format_horizon_text(value):
                 action = "Expected to BUY" if value >= 0 else "Expected to SELL"
                 return f"{action} {abs(value):,.2f} BTC"
@@ -1029,12 +1021,12 @@ def main(page: ft.Page):
             ui_row_item("Dealer Bias", charm_bias_txt)
         ]))),
 
-        # --- NEW: PACKAGING THE TIME-HORIZON FLOW PREDICTOR DIRECTLY BELOW THE CHARM ANALYSIS CARD ---
         create_section_header("DEALER REAL-TIME HEDGING FLOW ESTIMATOR"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
-            ui_row_item("Next 1 Hour Forward Rehedge", flow_1h_txt),
-            ui_row_item("Next 3 Hours Forward Rehedge", flow_3h_txt),
-            ui_row_item("Next 6 Hours Forward Rehedge", flow_6h_txt)
+            # RENAME FIX: Cleaned layout labels down to clean interval trackers
+            ui_row_item("Next 1H", flow_1h_txt),
+            ui_row_item("Next 3H", flow_3h_txt),
+            ui_row_item("Next 6H", flow_6h_txt)
         ]))),
 
         create_section_header("CUMULATIVE DELTA PREMIUM DRIFT (NDF)"),
