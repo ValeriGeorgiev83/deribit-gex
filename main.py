@@ -444,7 +444,7 @@ def fetch_deribit_gex(currency="BTC"):
             "velocity_ratio": velocity_pct,
             "iv_skew": iv_skew_val,
             "whale_bullish": whale_matrix[b_strike]["bullish"],
-            "whale_bearish": -whale_matrix[b_trade.get("strike", b_strike)]["bearish"] if "b_trade" in locals() else -whale_matrix[b_strike]["bearish"]
+            "whale_bearish": -whale_matrix[b_strike]["bearish"]
         })
 
     realized_vol_10d_val = calculate_realized_vol_10d(currency)
