@@ -19,6 +19,9 @@ REDIS_WHALE_KEY = "deribit_whale_blocks_24h"
 MAX_HISTORY_POINTS = 3500
 WHALE_THRESHOLD_USD = 250000.0
 
+# Keep track of the previous ATM IV to find live volatility direction velocity
+last_known_atm_iv = [50.0] 
+
 def native_norm_pdf(x):
     """Pure mathematical replacement for scipy.stats.norm.pdf to prevent deployment crashes."""
     return (1.0 / math.sqrt(2 * math.pi)) * math.exp(-0.5 * (x ** 2))
@@ -172,6 +175,14 @@ def fetch_deribit_gex(currency="BTC"):
     df_1m = base_df[base_df['days_to_expiry'] <= 30.0]
     df_3d = base_df[base_df['days_to_expiry'] <= 3.0]
     if df_3d.empty: df_3d = df_1m
+
+    # Calculate live IV shift direction multiplier
+    iv_shift_multiplier = 1.0
+    if len(last_known_atm_iv) > 0:
+        if atm_iv < last_known_atm_iv[-1]:
+            iv_shift_multiplier = -1.0  # Volatility is crushing down
+    last_known_atm_iv.append(atm_iv)
+    if len(last_known_atm_iv) > 20: last_known_atm_iv.pop(0)
 
     # --- GEX MATRICES ---
     call_df_1m = df_1m[df_1m['type'] == 'C']
@@ -430,7 +441,9 @@ def fetch_deribit_gex(currency="BTC"):
             "index": idx, "strike": b_strike, 
             "gex_3d": gex_3d_val, "abs_gex_3d": abs(gex_3d_val),
             "gex_1m": gex_1m_val, "abs_gex_1m": abs(gex_1m_val),
-            "vanna": vanna_val, "velocity_ratio": velocity_pct,
+            "vanna_exposure": vanna_val, 
+            "vanna_flow": vanna_val * iv_shift_multiplier, 
+            "velocity_ratio": velocity_pct,
             "iv_skew": iv_skew_val,
             "whale_bullish": whale_matrix[b_strike]["bullish"],
             "whale_bearish": -whale_matrix[b_strike]["bearish"]
@@ -452,7 +465,7 @@ def fetch_deribit_gex(currency="BTC"):
         "call_gex_3d": call_gex_3d, "put_gex_3d": put_gex_3d, "net_gex_3d": net_gex_3d, "call_weight_3d": call_weight_pct_3d,
         "max_pain": max_pain_level, "flip": flip_level, "breakout": breakout_price, 
         "resistance": resistance_level, "support": support_level, "call_inflow": total_accumulated_call_flow, 
-        "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "chart_data": chart_matrix,
+        "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "chart_data": m if 'chart_matrix' in locals() else chart_matrix,
         "skew_25d": skew_25d_val, "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level,
         "implied_vol": atm_iv, "realized_vol": realized_vol_10d_val,
         "trend_score": total_cohesion_points, "pt_gex": pt_gex, "pt_flow": pt_flow, "pt_price": pt_price, "pt_vol": pt_vol,
@@ -460,7 +473,8 @@ def fetch_deribit_gex(currency="BTC"):
         "ndf_drift_total": total_cumulative_ndf_drift,
         "aggr_call_ask": call_ask_hit_premium, "aggr_call_bid": call_bid_hit_premium,
         "aggr_put_ask": put_ask_hit_premium, "aggr_put_bid": put_bid_hit_premium,
-        "speed_current": net_speed_current, "speed_down_1000": net_speed_down_1000, "speed_up_1000": net_speed_up_1000
+        "speed_current": net_speed_current, "speed_down_1000": net_speed_down_1000, "speed_up_1000": net_speed_up_1000,
+        "iv_direction": "EXPANDING" if iv_shift_multiplier > 0 else "CRUSHING"
     }
 
 def fmt_gex(val):
@@ -483,6 +497,7 @@ def main(page: ft.Page):
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     vanna_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
+    vanna_flow_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     velocity_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     whale_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
@@ -579,6 +594,13 @@ def main(page: ft.Page):
 
     vanna_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=vanna_bottom_axis,
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        animate=True, interactive=True, height=240
+    )
+
+    vanna_flow_bar_chart = ft.BarChart(
+        bar_groups=[], bottom_axis=vanna_flow_bottom_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         animate=True, interactive=True, height=240
@@ -829,7 +851,7 @@ def main(page: ft.Page):
                     redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
             except Exception as ex: print(f"Cloud Logging Interrupted: {ex}")
             
-            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_velocity, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], [], float('inf'), -1
+            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_vanna_flow, groups_velocity, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], [], [], [], float('inf'), -1
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist: min_dist, spot_index = dist, item['index']
@@ -868,7 +890,7 @@ def main(page: ft.Page):
 
             for item in m['chart_data']:
                 strike_val, is_spot = item['strike'], (item['index'] == spot_index)
-                val_3d, abs_3d, val_1m, abs_1m, v_exposure, vel_ratio, iv_val_item = item['gex_3d'], item['abs_gex_3d'], item['gex_1m'], item['abs_gex_1m'], item['vanna'], item['velocity_ratio'], item['iv_skew']
+                val_3d, abs_3d, val_1m, abs_1m, v_exposure, v_flow, vel_ratio, iv_val_item = item['gex_3d'], item['abs_gex_3d'], item['gex_1m'], item['abs_gex_1m'], item['vanna_exposure'], item['vanna_flow'], item['velocity_ratio'], item['iv_skew']
                 w_bull, w_bear = item['whale_bullish'], item['whale_bearish']
 
                 groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color=ft.colors.GREEN_400 if val_3d >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
@@ -876,6 +898,10 @@ def main(page: ft.Page):
                 groups_net_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_1m, color="#bab7ab" if val_1m >= 0 else "#1661b4", width=12, border_radius=2)]))
                 groups_abs_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_1m, color="#ab47bc", width=12, border_radius=2)]))
                 groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a", width=12, border_radius=2)]))
+                
+                # AESTHETIC FIX: Positive flows keep original exposure color ("#d26e5a"), Negative flows render in clean Ivory White (WHITE70)
+                groups_vanna_flow.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_flow, color="#d26e5a" if v_flow >= 0 else ft.colors.WHITE70, width=12, border_radius=2)]))
+                
                 groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=12, border_radius=2)]))
 
                 groups_whale.append(ft.BarChartGroup(
@@ -907,6 +933,9 @@ def main(page: ft.Page):
             
             vanna_bar_chart.bar_groups = groups_vanna
             vanna_bottom_axis.labels = list(new_labels)
+
+            vanna_flow_bar_chart.bar_groups = groups_vanna_flow
+            vanna_flow_bottom_axis.labels = list(new_labels)
 
             velocity_bar_chart.bar_groups = groups_velocity
             velocity_bottom_axis.labels = list(new_labels)
@@ -945,6 +974,9 @@ def main(page: ft.Page):
         
         create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
+
+        create_section_header("REAL-TIME VANNA HEDGING FLOW PROFILE (EXPOSURE x IV VELOCITY)"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_flow_bar_chart)),
 
         create_section_header("INTRADAY GAMMA VELOCITY PROFILE (VOLUME / OI)"),
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
@@ -1023,7 +1055,6 @@ def main(page: ft.Page):
 
         create_section_header("DEALER REAL-TIME HEDGING FLOW ESTIMATOR"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
-            # RENAME FIX: Cleaned layout labels down to clean interval trackers
             ui_row_item("Next 1H", flow_1h_txt),
             ui_row_item("Next 3H", flow_3h_txt),
             ui_row_item("Next 6H", flow_6h_txt)
