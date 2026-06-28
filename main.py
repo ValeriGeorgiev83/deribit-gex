@@ -313,11 +313,12 @@ def fetch_deribit_gex(currency="BTC"):
                     net_call_fiat_flow -= fiat_notional_value
                     call_bid_hit_premium += fiat_notional_value
             elif option_type == 'P':
+                # FIX: Treat Put Premium standardly (Positive = Aggressive Protection Inflow)
                 if direction == 'buy':
-                    net_put_fiat_flow -= fiat_notional_value
+                    net_put_fiat_flow += fiat_notional_value
                     put_ask_hit_premium += fiat_notional_value
                 else:
-                    net_put_fiat_flow += fiat_notional_value
+                    net_put_fiat_flow -= fiat_notional_value
                     put_bid_hit_premium += fiat_notional_value
                 
             if days_to_expiry <= 3.0 and fiat_notional_value >= WHALE_THRESHOLD_USD:
@@ -364,7 +365,9 @@ def fetch_deribit_gex(currency="BTC"):
 
     total_accumulated_call_flow = sum(f["call_flow"] for f in valid_flow_records) if valid_flow_records else net_call_fiat_flow
     total_accumulated_put_flow = sum(f["put_flow"] for f in valid_flow_records) if valid_flow_records else net_put_fiat_flow
-    net_flow_bias = total_accumulated_call_flow + (total_accumulated_put_flow * -1)
+    
+    # FIX: Net Premium Bias is Call Inflows minus Bearish Put Protection Inflows
+    net_flow_bias = total_accumulated_call_flow - total_accumulated_put_flow
     
     total_cumulative_ndf_drift = sum(f.get("ndf_drift", 0.0) for f in valid_flow_records) if valid_flow_records else net_delta_premium_drift
 
@@ -707,6 +710,7 @@ def main(page: ft.Page):
             elif c_flow < 0: inflows_call_txt.color = ft.colors.RED_400
             else: inflows_call_txt.color = ft.colors.GREY_400
 
+            # FIX UI DISPLAY: standard representation of bearish protection flow (negative color layout helper)
             outflows_put_txt.value = fmt_signed_flow(p_flow)
             if p_flow > 0: outflows_put_txt.color = ft.colors.RED_400
             elif p_flow < 0: outflows_put_txt.color = ft.colors.GREEN_400
@@ -947,7 +951,7 @@ def main(page: ft.Page):
             if len(top_anomalies) >= 2:
                 anomaly_txt_2nd.value = f"${top_anomalies[1]['strike']/1000:.0f}k Strike ({top_anomalies[1]['velocity_ratio']:.1f}%)"
             if len(top_anomalies) >= 3:
-                anomaly_txt_2nd.value = f"${top_anomalies[2]['strike']/1000:.0f}k Strike ({top_anomalies[2]['velocity_ratio']:.1f}%)"
+                anomaly_txt_3rd.value = f"${top_anomalies[2]['strike']/1000:.0f}k Strike ({top_anomalies[2]['velocity_ratio']:.1f}%)"
 
             for item in m['chart_data']:
                 strike_val, is_spot = item['strike'], (item['index'] == spot_index)
@@ -1046,7 +1050,6 @@ def main(page: ft.Page):
             ui_row_item("3rd Anomaly", anomaly_txt_3rd)
         ]))),
 
-        # CORRECTED SEQUENCE: VEX card and Hour Delta Migration card successfully placed below Intraday Velocity
         create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
 
