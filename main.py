@@ -67,7 +67,7 @@ def calculate_realized_vol_10d(currency="BTC"):
         return 50.0
 
 def fetch_deribit_gex(currency="BTC"):
-    """Fetches and calculates GEX, flows, delta drifts, whale blocks, IV/RV, Speed Acceleration, Cohesion, Charm, Vanna, and Volume/OI Velocity metrics."""
+    """Fetches and calculates GEX, flows, delta drifts, whale blocks, IV/RV, Speed, Charm, Vanna, and forward rehedge predictive estimators."""
     try:
         idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
         idx_res = requests.get(idx_url).json()
@@ -173,7 +173,7 @@ def fetch_deribit_gex(currency="BTC"):
     df_3d = base_df[base_df['days_to_expiry'] <= 3.0]
     if df_3d.empty: df_3d = df_1m
 
-    # --- 1M CALCULATION ENGINE ---
+    # --- GEX MATRICES ---
     call_df_1m = df_1m[df_1m['type'] == 'C']
     put_df_1m = df_1m[df_1m['type'] == 'P']
     call_gex_1m = call_df_1m['gex'].sum()
@@ -182,7 +182,6 @@ def fetch_deribit_gex(currency="BTC"):
     total_abs_gex_1m = abs(call_gex_1m) + abs(put_gex_1m)
     call_weight_pct_1m = (abs(call_gex_1m) / total_abs_gex_1m * 100) if total_abs_gex_1m > 0 else 50.0
     
-    # --- 3D CALCULATION ENGINE ---
     call_df_3d = df_3d[df_3d['type'] == 'C']
     put_df_3d = df_3d[df_3d['type'] == 'P']
     call_gex_3d = call_df_3d['gex'].sum()
@@ -199,7 +198,6 @@ def fetch_deribit_gex(currency="BTC"):
     p1_level = put_walls_3d.index[0] if len(put_walls_3d) >= 1 else spot_price
     p2_level = put_walls_3d.index[1] if len(put_walls_3d) >= 2 else spot_price
     
-    # --- 7D EXPIRATION ENGINE FOR IV SKEW ---
     df_7d = base_df[base_df['days_to_expiry'] <= 7.0]
     skew_25d_val = 0.0
     if not df_7d.empty:
@@ -243,7 +241,7 @@ def fetch_deribit_gex(currency="BTC"):
     support_level = put_strike_gex_3d.idxmax() if not put_strike_gex_3d.empty else spot_price * 0.98
     breakout_price = resistance_level * 1.002
 
-    # --- LIVE OPTION TAPE LOGIC + WHALE BLOCK FILTERING + NDF TRACKING ---
+    # --- LIVE OPTION TAPE LOGIC + WHALE BLOCK FILTERING ---
     net_call_fiat_flow = 0.0
     net_put_fiat_flow = 0.0
     net_delta_premium_drift = 0.0
@@ -534,6 +532,11 @@ def main(page: ft.Page):
     speed_up_txt = ft.Text("0.00", size=14, weight=ft.FontWeight.W_600)
     speed_regime_txt = ft.Text("Stable Neutral", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREEN_400)
 
+    # --- NEW: INITIALIZE HOURLY TIME-HORIZON HEDGING OUTPUT BLOCKS ---
+    flow_1h_txt = ft.Text("0.00 BTC", size=14, weight=ft.FontWeight.BOLD)
+    flow_3h_txt = ft.Text("0.00 BTC", size=14, weight=ft.FontWeight.BOLD)
+    flow_6h_txt = ft.Text("0.00 BTC", size=14, weight=ft.FontWeight.BOLD)
+
     cohesion_main_txt = ft.Text("0.0 (Neutral)", size=14, weight=ft.FontWeight.BOLD)
     gex_component_txt = ft.Text("0.0", size=14, color=ft.colors.GREY_400)
     flow_component_txt = ft.Text("0.0", size=14, color=ft.colors.GREY_400)
@@ -764,6 +767,44 @@ def main(page: ft.Page):
                 charm_bias_txt.value = "Stable Neutral"
                 charm_bias_txt.color = ft.colors.GREY_400
 
+            # --- CALCULATE & BIND TIME-HORIZON FLOW PREDICTOR MODEL VALUES ---
+            # 1. Charm Drift (Deterministic linear time erosion)
+            charm_1h = c_flow_val * 1.0
+            charm_3h = c_flow_val * 3.0
+            charm_6h = c_flow_val * 6.0
+
+            # 2. Gamma Variance Pressure (1-Sigma Volatility movement bounds)
+            # Volatility variance for 1, 3, 6 hour spans
+            std_dev_1h = (iv_val / 100.0) * math.sqrt(1.0 / 8760.0)
+            std_dev_3h = (iv_val / 100.0) * math.sqrt(3.0 / 8760.0)
+            std_dev_6h = (iv_val / 100.0) * math.sqrt(6.0 / 8760.0)
+
+            # Convert options-implied total 3D chain gamma into raw contract units
+            gex_contracts_3d = m['net_gex_3d'] / m['spot']
+
+            gamma_press_1h = gex_contracts_3d * std_dev_1h
+            gamma_press_3h = gex_contracts_3d * std_dev_3h
+            gamma_press_6h = gex_contracts_3d * std_dev_6h
+
+            # Aggregate total predictive rehedging flows
+            total_1h_flow = charm_1h + gamma_press_1h
+            total_3h_flow = charm_3h + gamma_press_3h
+            total_6h_flow = charm_6h + gamma_press_6h
+
+            # Format outputs elegantly to reflect directionality
+            def format_horizon_text(value):
+                action = "Expected to BUY" if value >= 0 else "Expected to SELL"
+                return f"{action} {abs(value):,.2f} BTC"
+
+            flow_1h_txt.value = format_horizon_text(total_1h_flow)
+            flow_1h_txt.color = ft.colors.GREEN_400 if total_1h_flow >= 0 else ft.colors.RED_400
+
+            flow_3h_txt.value = format_horizon_text(total_3h_flow)
+            flow_3h_txt.color = ft.colors.GREEN_400 if total_3h_flow >= 0 else ft.colors.RED_400
+
+            flow_6h_txt.value = format_horizon_text(total_6h_flow)
+            flow_6h_txt.color = ft.colors.GREEN_400 if total_6h_flow >= 0 else ft.colors.RED_400
+
             drift_val = m['ndf_drift_total']
             ndf_drift_metric_txt.value = fmt_signed_flow(drift_val)
             if drift_val > 0:
@@ -970,11 +1011,9 @@ def main(page: ft.Page):
             ui_row_item("Predictive Stress: Spot -$1000 Slippage", speed_down_txt),
             ui_row_item("Predictive Stress: Spot +$1000 Rally", speed_up_txt),
             ft.Divider(height=10, color=ft.colors.GREY_800),
-            # COSMETIC FIX: Shortened label token from "Hedging Volatility Regime" to "Regime"
             ui_row_item("Regime", speed_regime_txt)
         ]))),
 
-        # COSMETIC FIX: Added section header directly above the ITC Score card
         create_section_header("INSTITUTIONAL COHESION (ITC SCORE)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("GEX Regime Component", gex_component_txt),
@@ -988,6 +1027,14 @@ def main(page: ft.Page):
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("Estimated Decay Rehedge Flow", charm_flow_metric_txt),
             ui_row_item("Dealer Bias", charm_bias_txt)
+        ]))),
+
+        # --- NEW: PACKAGING THE TIME-HORIZON FLOW PREDICTOR DIRECTLY BELOW THE CHARM ANALYSIS CARD ---
+        create_section_header("DEALER REAL-TIME HEDGING FLOW ESTIMATOR"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([
+            ui_row_item("Next 1 Hour Forward Rehedge", flow_1h_txt),
+            ui_row_item("Next 3 Hours Forward Rehedge", flow_3h_txt),
+            ui_row_item("Next 6 Hours Forward Rehedge", flow_6h_txt)
         ]))),
 
         create_section_header("CUMULATIVE DELTA PREMIUM DRIFT (NDF)"),
