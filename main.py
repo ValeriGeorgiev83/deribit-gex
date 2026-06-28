@@ -27,6 +27,25 @@ def native_norm_cdf(x):
     """Pure mathematical approximation for standard normal cumulative distribution function (CDF)."""
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
+def calculate_speed_for_option(spot, strike, iv, t_days, oi, option_type):
+    """Calculates Option Speed (dGamma/dSpot) contract footprint mathematically."""
+    if t_days <= 0 or iv <= 0 or oi <= 0:
+        return 0.0
+    try:
+        t = t_days / 365.0
+        d1 = (math.log(spot / strike) + (0.5 * (iv ** 2)) * t) / (iv * math.sqrt(t))
+        pdf = native_norm_pdf(d1)
+        
+        # Standard Black-Scholes Speed derivation formula component
+        gamma = pdf / (spot * iv * math.sqrt(t))
+        speed_per_contract = (-gamma / spot) * (1.0 + (d1 / (iv * math.sqrt(t))))
+        
+        # Institutional weighting attribution mapping
+        footprint = oi * speed_per_contract * 0.01
+        return -footprint if option_type == 'P' else footprint
+    except Exception:
+        return 0.0
+
 def calculate_realized_vol_10d(currency="BTC"):
     """Fetches the last 10 daily close prices to calculate annualized close-to-close realized volatility."""
     try:
@@ -50,7 +69,7 @@ def calculate_realized_vol_10d(currency="BTC"):
         return 50.0
 
 def fetch_deribit_gex(currency="BTC"):
-    """Fetches and calculates GEX, flows, delta drifts, whale blocks, IV/RV, Cohesion, Charm, Vanna, Volume/OI Velocity, and Aggressor metrics."""
+    """Fetches and calculates GEX, flows, delta drifts, whale blocks, IV/RV, Speed Acceleration, Cohesion, Charm, Vanna, and Volume/OI Velocity metrics."""
     try:
         idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
         idx_res = requests.get(idx_url).json()
@@ -67,6 +86,11 @@ def fetch_deribit_gex(currency="BTC"):
     atm_iv = 50.0
     min_strike_dist = float('inf')
     net_charm_accumulator = 0.0
+    
+    # Speed Calculation Trackers
+    net_speed_current = 0.0
+    net_speed_down_500 = 0.0
+    net_speed_up_500 = 0.0
     
     for item in data_list:
         name = item['instrument_name']
@@ -129,6 +153,11 @@ def fetch_deribit_gex(currency="BTC"):
             item_charm_exposure = -item_charm_exposure
             
         net_charm_accumulator += item_charm_exposure
+        
+        # Dynamic Speed Matrix Evaluation
+        net_speed_current += calculate_speed_for_option(spot_price, strike, iv, days_to_expiry, oi, option_type)
+        net_speed_down_500 += calculate_speed_for_option(spot_price - 500.0, strike, iv, days_to_expiry, oi, option_type)
+        net_speed_up_500 += calculate_speed_for_option(spot_price + 500.0, strike, iv, days_to_expiry, oi, option_type)
         
         parsed_options.append({
             'strike': strike, 
@@ -436,7 +465,9 @@ def fetch_deribit_gex(currency="BTC"):
         "net_charm_flow": hourly_charm_rehedge_contracts,
         "ndf_drift_total": total_cumulative_ndf_drift,
         "aggr_call_ask": call_ask_hit_premium, "aggr_call_bid": call_bid_hit_premium,
-        "aggr_put_ask": put_ask_hit_premium, "aggr_put_bid": put_bid_hit_premium
+        "aggr_put_ask": put_ask_hit_premium, "aggr_put_bid": put_bid_hit_premium,
+        # Pack computed structural speed profiles out safely to interface layers
+        "speed_current": net_speed_current, "speed_down_500": net_speed_down_500, "speed_up_500": net_speed_up_500
     }
 
 def fmt_gex(val):
@@ -493,7 +524,6 @@ def main(page: ft.Page):
     outflows_put_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
     net_flow_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
 
-    # --- MODIFIED: REMOVED ENTER EMBLEM SYMBOLS FROM LABELS ---
     call_ask_hit_txt = ft.Text("0.0M", size=14, color=ft.colors.GREEN_400)
     call_bid_hit_txt = ft.Text("0.0M", size=14, color=ft.colors.RED_400)
     put_ask_hit_txt = ft.Text("0.0M", size=14, color=ft.colors.RED_400)
@@ -503,6 +533,12 @@ def main(page: ft.Page):
     iv_metric_txt = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
     rv_metric_txt = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
     vol_variance_txt = ft.Text("0.0% (Neutral)", size=14, weight=ft.FontWeight.BOLD)
+
+    # --- NEW: INITIALIZE SPOT SPEED ACCELERATION METRIC MONITORS ---
+    speed_curr_txt = ft.Text("0.00", size=14, weight=ft.FontWeight.W_600)
+    speed_down_txt = ft.Text("0.00", size=14, weight=ft.FontWeight.W_600)
+    speed_up_txt = ft.Text("0.00", size=14, weight=ft.FontWeight.W_600)
+    speed_regime_txt = ft.Text("Stable Neutral", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_400)
 
     cohesion_main_txt = ft.Text("0.0 (Neutral)", size=14, weight=ft.FontWeight.BOLD)
     gex_component_txt = ft.Text("0.0", size=14, color=ft.colors.GREY_400)
@@ -684,6 +720,23 @@ def main(page: ft.Page):
             else:
                 vol_variance_txt.value = f"{variance_spread:+.1f}% (Sideways Risk)"
                 vol_variance_txt.color = ft.colors.RED_400
+
+            # --- REFRESH AND BIND LIVE SPEED ACCELERATION METRIC MONITORS ---
+            sp_curr, sp_down, sp_up = m['speed_current'], m['speed_down_500'], m['speed_up_500']
+            speed_curr_txt.value = f"{sp_curr:+.4f}"
+            speed_down_txt.value = f"{sp_down:+.4f}"
+            speed_up_txt.value = f"{sp_up:+.4f}"
+            
+            # Formulate the contextual risk regime flag matching dealer risk profiles
+            if sp_down < sp_curr and sp_down < 0:
+                speed_regime_txt.value = "CRITICAL: Downside Acceleration Risk (Waterfall Threat)"
+                speed_regime_txt.color = ft.colors.RED_accent
+            elif sp_curr < -0.05:
+                speed_regime_txt.value = "High Convexity Vulnerability Zone"
+                speed_regime_txt.color = ft.colors.ORANGE_ACCENT
+            else:
+                speed_regime_txt.value = "Stable Net Gamma Profile"
+                speed_regime_txt.color = ft.colors.GREEN_400
 
             scr = m['trend_score']
             gex_component_txt.value = f"{m['pt_gex']:.1f}"
@@ -903,7 +956,6 @@ def main(page: ft.Page):
             ui_row_item("Net Premium Bias", net_flow_txt)
         ]))),
 
-        # --- MODIFIED: AGGRESSOR ELEMENTS DETACHED INTO A SEPARATE INDEPENDENT CARD ---
         create_section_header("BLOCK TRADE AGGRESSOR ANALYSIS (BID vs ASK)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("Call Aggressor Buys (Hit Ask)", call_ask_hit_txt),
@@ -918,6 +970,16 @@ def main(page: ft.Page):
             ui_row_item("Implied Volatility (IV)", iv_metric_txt),
             ui_row_item("Realized Volatility (RV)", rv_metric_txt),
             ui_row_item("IV - RV Variation", vol_variance_txt)
+        ]))),
+
+        # --- NEW: DEALER SPOT GAMMA ACCELERATION CARD INSERTED EXACTLY AFTER VOLATILITY VARIANCE CARD ---
+        create_section_header("DEALER SPOT GAMMA ACCELERATION (SPEED)"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([
+            ui_row_item("Current Spot Speed Engine", speed_curr_txt),
+            ui_row_item("Predictive Stress: Spot -$500 Slippage", speed_down_txt),
+            ui_row_item("Predictive Stress: Spot +$500 Rally", speed_up_txt),
+            ft.Divider(height=10, color=ft.colors.GREY_800),
+            ui_row_item("Hedging Volatility Regime", speed_regime_txt)
         ]))),
 
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
