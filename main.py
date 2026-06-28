@@ -347,7 +347,7 @@ def fetch_deribit_gex(currency="BTC"):
                 "put_flow": round(net_put_fiat_flow, 2),
                 "ndf_drift": round(net_delta_premium_drift, 2)
             }
-            redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
+            redis.rpush(REDIS_FLOW_KEY, json.dumps(snapshot))
         all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
         valid_flow_records, records_to_remove_count = [], 0
         for record in all_flow_records:
@@ -851,12 +851,31 @@ def main(page: ft.Page):
                     redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
             except Exception as ex: print(f"Cloud Logging Interrupted: {ex}")
             
-            # FIXED INITIALIZATION MATRIX: Mapped exactly 12 variables on left side to 12 parameters on right side
             groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_vanna_flow, groups_velocity, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], [], [], float('inf'), -1
             
+            # Dynamic peak boundary detection variables
+            max_abs_vanna_exposure = 0.0001
+            max_abs_vanna_flow = 0.0001
+
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
                 if dist < min_dist: min_dist, spot_index = dist, item['index']
+                
+                # Sift out global outlier boundaries for symmetry pinning
+                if abs(item['vanna_exposure']) > max_abs_vanna_exposure:
+                    max_abs_vanna_exposure = abs(item['vanna_exposure'])
+                if abs(item['vanna_flow']) > max_abs_vanna_flow:
+                    max_abs_vanna_flow = abs(item['vanna_flow'])
+            
+            # Scale slightly to guarantee safety padding headroom on chart ceilings
+            vanna_exposure_bound = max_abs_vanna_exposure * 1.15
+            vanna_flow_bound = max_abs_vanna_flow * 1.15
+
+            # Apply perfect inverse reflection bounds down to layout widgets
+            vanna_bar_chart.min_y = -vanna_exposure_bound
+            vanna_bar_chart.max_y = vanna_exposure_bound
+            vanna_flow_bar_chart.min_y = -vanna_flow_bound
+            vanna_flow_bar_chart.max_y = vanna_flow_bound
             
             valid_ivs = [item['iv_skew'] for item in m['chart_data'] if item['iv_skew'] > 0]
             max_iv = max_iv if (max_iv := max(valid_ivs, default=100.0)) > 0 else 100.0
@@ -901,7 +920,7 @@ def main(page: ft.Page):
                 groups_abs_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_1m, color="#ab47bc", width=12, border_radius=2)]))
                 groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a", width=12, border_radius=2)]))
                 
-                # Dynamic matching color selection vectors
+                # Symmetrical flow rod generation vectors
                 groups_vanna_flow.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_flow, color="#d26e5a" if v_flow >= 0 else ft.colors.WHITE70, width=12, border_radius=2)]))
                 
                 groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=12, border_radius=2)]))
