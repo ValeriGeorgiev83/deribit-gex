@@ -16,6 +16,7 @@ redis = Redis(
 REDIS_FLOW_KEY = "deribit_flow_24h_history"
 REDIS_WHALE_KEY = "deribit_whale_blocks_24h"
 REDIS_OI_MIGRATION_KEY = "deribit_oi_hourly_history"
+MAX_HISTORY_POINTS = 3500
 WHALE_THRESHOLD_USD = 500000.0
 
 # Keep track of the previous ATM IV to find live volatility direction velocity
@@ -836,7 +837,7 @@ def main(page: ft.Page):
             # --- HOURLY GATED LOGGING GATEWAY SYSTEM ---
             time_now = datetime.now(timezone.utc)
             
-            # 1. Logic for open interest migration data to be sent only in the first 4 minutes of every hour
+            # 1. Open Interest hourly gate constraint logic (< 4 mins)
             if time_now.minute <= 4:
                 hourly_time_tag = time_now.strftime("%m-%d %H:00")
                 
