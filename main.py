@@ -11,12 +11,14 @@ from datetime import datetime, timezone, timedelta
 from upstash_redis import Redis
 redis = Redis(
     url="https://large-ghost-131173.upstash.io", 
-    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0TzlhOWJmZGM1MTg5OWViZDIxMw"
+    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
 )
+REDIS_KEY = "deribit_gex_3d_history"
 REDIS_FLOW_KEY = "deribit_flow_24h_history"
 REDIS_WHALE_KEY = "deribit_whale_blocks_24h"
 REDIS_OI_MIGRATION_KEY = "deribit_oi_hourly_history"
-WHALE_THRESHOLD_USD = 500000.0
+MAX_HISTORY_POINTS = 3500
+WHALE_THRESHOLD_USD = 250000.0
 
 # Keep track of the previous ATM IV to find live volatility direction velocity
 last_known_atm_iv = [50.0] 
@@ -330,27 +332,27 @@ def fetch_deribit_gex(currency="BTC"):
         print(f"Option Tape Fetch Interrupted: {ex}")
 
     time_now = datetime.now(timezone.utc)
-    
-    # ADDED SECOND TRACKING: Forces every single refresh to generate a completely unique key line in Upstash
-    current_ts = time_now.strftime("%m-%d %H:%M:%S")
+    current_ts = time_now.strftime("%m-%d %H:%M")
 
     try:
-        flow_snapshot = {
-            "timestamp": current_ts, 
-            "call_flow": round(net_call_fiat_flow, 2), 
-            "put_flow": round(net_put_fiat_flow, 2),
-            "ndf_drift": round(net_delta_premium_drift, 2)
-        }
-        redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
-        
+        last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
+        is_duplicate = False
+        if last_logged_element:
+            last_logged_data = json.loads(last_logged_element)
+            if last_logged_data.get("timestamp") == current_ts: is_duplicate = True
+        if not is_duplicate:
+            flow_snapshot = {
+                "timestamp": current_ts, 
+                "call_flow": round(net_call_fiat_flow, 2), 
+                "put_flow": round(net_put_fiat_flow, 2),
+                "ndf_drift": round(net_delta_premium_drift, 2)
+            }
+            redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
         all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
         valid_flow_records, records_to_remove_count = [], 0
         for record in all_flow_records:
             f_data = json.loads(record)
-            try:
-                rec_time = datetime.strptime(f"{time_now.year}-{f_data['timestamp']}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-            except Exception:
-                rec_time = datetime.strptime(f"{time_now.year}-{f_data['timestamp']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+            rec_time = datetime.strptime(f"{time_now.year}-{f_data['timestamp']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
             if rec_time > time_now: rec_time = rec_time.replace(year=time_now.year - 1)
             if (time_now - rec_time).total_seconds() <= 86400.0: valid_flow_records.append(f_data)
             else: records_to_remove_count += 1
@@ -836,10 +838,22 @@ def main(page: ft.Page):
             # --- HOURLY GATED LOGGING GATEWAY SYSTEM ---
             time_now = datetime.now(timezone.utc)
             
-            if time_now.minute <= 4:
+            if True:
                 hourly_time_tag = time_now.strftime("%m-%d %H:%M")
                 
                 try:
+                    last_gex_element = redis.lindex(REDIS_KEY, -1)
+                    if last_gex_element:
+                        try:
+                            last_data = json.loads(last_gex_element)
+                            if last_data.get("timestamp") == hourly_time_tag:
+                                redis.rpop(REDIS_KEY)
+                        except Exception: pass
+                    
+                    snapshot = {"timestamp": hourly_time_tag, "gex": round(m['net_gex_1m'], 2)}
+                    redis.rpush(REDIS_KEY, json.dumps(snapshot))
+                    redis.ltrim(REDIS_KEY, -MAX_HISTORY_POINTS, -1)
+                    
                     last_oi_element = redis.lindex(REDIS_OI_MIGRATION_KEY, -1)
                     if last_oi_element:
                         try:
@@ -861,7 +875,7 @@ def main(page: ft.Page):
                     
                     if redis.llen(REDIS_OI_MIGRATION_KEY) == 0:
                         dummy_snapshot = {
-                            "timestamp": (time_now - timedelta(hours=1)).strftime("%m-%d %H:%M"),
+                            "timestamp": (time_now - timedelta(minutes=1)).strftime("%m-%d %H:%M"),
                             "oi_distribution": {k: float(v) * 0.95 for k, v in oi_snapshot_map.items()}
                         }
                         redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(dummy_snapshot))
