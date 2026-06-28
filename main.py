@@ -961,7 +961,6 @@ def main(page: ft.Page):
                 
                 groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a" if v_exposure >= 0 else ft.colors.WHITE70, width=12, border_radius=2)]))
                 
-                # COLOR UPGRADE: Positive migration bars assigned to #35c2b3, negative assigned to #7948be
                 oi_delta = historical_oi_deltas.get(strike_val, 0.0)
                 groups_oi_migration.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=oi_delta, color="#35c2b3" if oi_delta >= 0 else "#7948be", width=12, border_radius=2)]))
 
@@ -1029,18 +1028,22 @@ def main(page: ft.Page):
             ui_row_item("Put Concetration (P2)", p2_txt)
         ]))),
 
-        create_section_header("NET GAMMA EXPOSURE BY STRIKE (1M)"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_1m)),
-
-        create_section_header("ABS GAMMA EXPOSURE BY STRIKE (1M)"),
-        ft.Card(content=ft.Container(padding=15, content=abs_gex_chart_1m)),
-        
         create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
 
         create_section_header("OPEN INTEREST MIGRATION ENGINE (HOURLY DELTA)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=oi_migration_bar_chart)),
 
+        # STRUCTURAL PLACEMENT: Important Levels shifted directly above the 1M Net Gamma card
+        create_section_header("IMPORTANT LEVELS"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
+
+        create_section_header("NET GAMMA EXPOSURE BY STRIKE (1M)"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_1m)),
+
+        create_section_header("ABS GAMMA EXPOSURE BY STRIKE (1M)"),
+        ft.Card(content=ft.Container(padding=15, content=abs_gex_chart_1m)),
+        
         create_section_header("INTRADAY GAMMA VELOCITY PROFILE (VOLUME / OI)"),
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
             velocity_bar_chart,
@@ -1065,9 +1068,6 @@ def main(page: ft.Page):
             ft.Container(height=10),
             ui_row_item("Current 25D strike Skew", skew_25d_txt)
         ]))),
-        
-        create_section_header("IMPORTANT LEVELS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
         
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
