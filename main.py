@@ -890,8 +890,6 @@ def main(page: ft.Page):
                     min_dist = dist
                     spot_index = item['index'] 
 
-                stk = item['strike']
-
             for item in m['chart_data']:
                 strike_val = item['strike']
                 is_spot = (item['index'] == spot_index)
@@ -992,13 +990,13 @@ def main(page: ft.Page):
             ui_row_item("Put Concentration (P2)", p2_txt)
         ]))),
 
-        # --- NEW CARD INTEGRATED DIRECTLY BENEATH ABS GEX 3D TRACKER ---
+        # --- CORRECTED BG -> BGCOLOR PARAMETERS INSIDE THIS NEW CONTAINER ---
         create_section_header("NEAR-TERM OPTION WALLS BY OPEN INTEREST (<= 3D EXPIRY)"),
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
             walls_bar_chart,
             ft.Row([
-                ft.Row([ft.Container(width=10, height=10, bg=ft.colors.GREEN_ACCENT_400), ft.Text("Call Walls (OI)", size=11, color=ft.colors.GREY_400)]),
-                ft.Row([ft.Container(width=10, height=10, bg=ft.colors.RED_ACCENT_400), ft.Text("Put Walls (OI)", size=11, color=ft.colors.GREY_400)])
+                ft.Row([ft.Container(width=10, height=10, bgcolor=ft.colors.GREEN_ACCENT_400), ft.Text("Call Walls (OI)", size=11, color=ft.colors.GREY_400)]),
+                ft.Row([ft.Container(width=10, height=10, bgcolor=ft.colors.RED_ACCENT_400), ft.Text("Put Walls (OI)", size=11, color=ft.colors.GREY_400)])
             ], alignment=ft.MainAxisAlignment.CENTER, spacing=20)
         ]))),
 
@@ -1105,6 +1103,8 @@ def main(page: ft.Page):
     refresh_dashboard()
 
 if __name__ == "__main__":
+    # Start up independent daemon worker loop BEFORE launching Flet UI engine
     worker_thread = threading.Thread(target=background_data_worker, daemon=True)
     worker_thread.start()
+    
     ft.app(target=main, port=int(os.environ.get("PORT", 8080)), host="0.0.0.0", view=None)
