@@ -963,9 +963,9 @@ def main(page: ft.Page):
             
             page.update()
 
+    # --- REMOVED REFRESH ELEVATEDBUTTON FROM ROW HEADER ---
     page.add(
-        ft.Row([ft.Text("DERIBIT GEX DASHBOARD", size=20, weight=ft.FontWeight.BOLD),
-                ft.ElevatedButton("Refresh View", on_click=refresh_dashboard, style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+        ft.Row([ft.Text("DERIBIT GEX DASHBOARD", size=20, weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.START),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("Bitcoin Spot Price", size=11, color=ft.colors.GREY_500), spot_price_container], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
         
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (3D)"),
