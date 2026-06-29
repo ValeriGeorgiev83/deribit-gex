@@ -73,211 +73,221 @@ def calculate_realized_vol_10d(currency="BTC"):
 def background_data_worker(currency="BTC"):
     """
     Independent data collection engine running in a separate thread.
-    Saves inflows, metrics, whales, and migrations to Upstash automatically.
-    Wakes up frequently to check for exact 5-minute clock marks to eliminate drift.
-    Uses an ID tracking engine to ensure no trade contract is ever counted twice.
+    Saves inflows, metrics, whales, and migrations to Upstash automatically every 5 minutes.
+    Tracks state using previous execution's last trade ID to slice overlapping transactions.
     """
     print("Background Upstash Processing Worker Loop Engaged.")
-    last_processed_minute = -1  # Prevent double-firing within the same minute chunk
-    
-    # Track unique trade records locally to completely prevent double-counting overlaps
-    processed_trade_ids = set()
-    trade_expiry_tracker = []  # List of tuples: (timestamp_epoch, trade_id)
-
     while True:
         try:
+            print(f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}] Processing backend metrics write...")
+            # Fetch raw details
+            idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
+            idx_res = requests.get(idx_url).json()
+            spot_price = float(idx_res['result']['index_price']) 
+
+            opt_url = f"https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency={currency}&kind=option"
+            opt_res = requests.get(opt_url).json()
+            data_list = opt_res['result']
+
             now = datetime.now(timezone.utc)
-            current_epoch = now.timestamp()
+            parsed_options = []
+            atm_iv = 50.0
+            min_strike_dist = float('inf')
+
+            for item in data_list:
+                name = item['instrument_name']
+                parts = name.split('-')
+                if len(parts) < 4: continue 
+                strike = float(parts[2])
+                oi = float(item.get('open_interest', 0))
+                if oi <= 0: continue
+                expiry_str = parts[1]
+                try:
+                    expiry_dt = datetime.strptime(expiry_str, "%d%b%y").replace(tzinfo=timezone.utc).replace(hour=8, minute=0, second=0)
+                    days_to_expiry = (expiry_dt - now).total_seconds() / 86400.0
+                    if days_to_expiry < 0: continue
+                except Exception: continue
+                
+                iv = float(item.get('mark_iv', 50)) / 100.0
+                if iv == 0: iv = 0.5 
+                if days_to_expiry <= 7.0:
+                    dist = abs(spot_price - strike)
+                    if dist < min_strike_dist:
+                        min_strike_dist = dist
+                        atm_iv = iv * 100.0 
+
+                parsed_options.append({'strike': strike, 'oi': oi, 'days_to_expiry': days_to_expiry})
+
+            # Process option tape trade entries
+            net_call_fiat_flow = 0.0
+            net_put_fiat_flow = 0.0
+            net_delta_premium_drift = 0.0
+            detected_whale_blocks = [] 
+
+            call_ask_hit_premium = 0.0
+            call_bid_hit_premium = 0.0
+            put_ask_hit_premium = 0.0
+            put_bid_hit_premium = 0.0 
+
+            trades_url = f"https://www.deribit.com/api/v2/public/get_last_trades_by_currency?currency={currency}&kind=option&count=1000"
+            trades_res = requests.get(trades_url).json()
+            trades_list = trades_res.get('result', {}).get('trades', []) 
+
+            # --- DYNAMIC RANGE RESOLUTION ENGINE ---
+            last_processed_id = None
+            try:
+                last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
+                if last_logged_element:
+                    last_processed_id = json.loads(last_logged_element).get("last_trade_id")
+            except Exception as e:
+                print(f"Error fetching last process state: {e}")
+
+            # Identify if our checkpoint exists inside the incoming payload array
+            incoming_ids = [str(t.get('trade_id', '')) for t in trades_list]
             
-            # --- HOUSEKEEPING: Clear old trade IDs out of memory cache (> 2 hours / 7200s) ---
-            while trade_expiry_tracker and (current_epoch - trade_expiry_tracker[0][0]) > 7200:
-                _, old_id = trade_expiry_tracker.pop(0)
-                processed_trade_ids.discard(old_id)
-
-            # Fire exactly on minutes divisible by 5 (0, 5, 10, 15, 20, etc.)
-            if now.minute % 5 == 0 and now.minute != last_processed_minute:
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] Clock checkpoint hit. Processing metrics write...")
+            slice_index = None
+            if last_processed_id and last_processed_id in incoming_ids:
+                # Deribit provides historical feeds ordered from newest to oldest.
+                # Find the index of the previously parsed trade boundary.
+                slice_index = incoming_ids.index(last_processed_id)
                 
-                # 1. Fetch index price
-                idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
-                idx_res = requests.get(idx_url).json()
-                spot_price = float(idx_res['result']['index_price']) 
+            # Filter the processing loop array based on our checkpoint conditions
+            if slice_index is not None:
+                # Process only trades that occurred AFTER the boundary trade (elements before its index)
+                active_trades_subset = trades_list[:slice_index]
+            else:
+                # Guard Condition 1 & 2: Process the full 1000 trades if first-run or ID scrolled off-screen
+                active_trades_subset = trades_list
 
-                # 2. Fetch book summaries
-                opt_url = f"https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency={currency}&kind=option"
-                opt_res = requests.get(opt_url).json()
-                data_list = opt_res['result']
+            # Safe update for the most recent transaction checkpoint element
+            new_most_recent_id = str(trades_list[0].get('trade_id', '')) if trades_list else last_processed_id
 
-                parsed_options = []
-                for item in data_list:
-                    name = item['instrument_name']
-                    parts = name.split('-')
-                    if len(parts) < 4: continue 
-                    strike = float(parts[2])
-                    oi = float(item.get('open_interest', 0))
-                    if oi <= 0: continue
-                    expiry_str = parts[1]
-                    try:
-                        expiry_dt = datetime.strptime(expiry_str, "%d%b%y").replace(tzinfo=timezone.utc).replace(hour=8, minute=0, second=0)
-                        days_to_expiry = (expiry_dt - now).total_seconds() / 86400.0
-                        if days_to_expiry < 0: continue
-                    except Exception: continue
-                    
-                    parsed_options.append({'strike': strike, 'oi': oi, 'days_to_expiry': days_to_expiry})
+            for trade in active_trades_subset:
+                ins_name = trade.get('instrument_name', '')
+                parts = ins_name.split('-')
+                if len(parts) < 4: continue 
+                expiry_str = parts[1]
+                strike = float(parts[2])
+                option_type = parts[3] 
 
-                # 3. Fetch recent trades tape with overlap filtering
-                net_call_fiat_flow = 0.0
-                net_put_fiat_flow = 0.0
-                net_delta_premium_drift = 0.0
-                detected_whale_blocks = [] 
+                try:
+                    expiry_dt = datetime.strptime(expiry_str, "%d%b%y").replace(tzinfo=timezone.utc).replace(hour=8, minute=0)
+                    days_to_expiry = (expiry_dt - now).total_seconds() / 86400.0
+                except Exception: continue 
 
-                call_ask_hit_premium = 0.0
-                call_bid_hit_premium = 0.0
-                put_ask_hit_premium = 0.0
-                put_bid_hit_premium = 0.0 
+                direction = trade.get('direction', 'buy')
+                amount = float(trade.get('amount', 0))
+                trade_index_price = float(trade.get('index_price', spot_price))
+                fiat_notional_value = amount * trade_index_price
+                trade_id = str(trade.get('trade_id', ''))
+                timestamp_ms = trade.get('timestamp', int(now.timestamp() * 1000))
+                iv_trade = float(trade.get('iv', 50)) / 100.0 
 
-                trades_url = f"https://www.deribit.com/api/v2/public/get_last_trades_by_currency?currency={currency}&kind=option&count=1000"
-                trades_res = requests.get(trades_url).json()
-                trades_list = trades_res.get('result', {}).get('trades', []) 
+                try:
+                    t_trade = max(days_to_expiry, 0.01) / 365.0
+                    d1_trade = (math.log(trade_index_price / strike) + (0.5 * (iv_trade ** 2)) * t_trade) / (iv_trade * math.sqrt(t_trade))
+                    trade_delta = native_norm_cdf(d1_trade) if option_type == 'C' else (native_norm_cdf(d1_trade) - 1.0)
+                except Exception: trade_delta = 0.5 if option_type == 'C' else -0.5 
 
-                for trade in trades_list:
-                    trade_id = str(trade.get('trade_id', ''))
-                    if not trade_id: continue
-                    
-                    # CRITICAL ENGINE PROTECTION: Skip if this specific transaction was already handled
-                    if trade_id in processed_trade_ids:
-                        continue
+                trade_ndf = trade_delta * fiat_notional_value
+                if direction != 'buy': trade_ndf = -trade_ndf 
+                net_delta_premium_drift += trade_ndf 
 
-                    ins_name = trade.get('instrument_name', '')
-                    parts = ins_name.split('-')
-                    if len(parts) < 4: continue 
-                    expiry_str = parts[1]
-                    strike = float(parts[2])
-                    option_type = parts[3] 
+                if option_type == 'C':
+                    if direction == 'buy':
+                        net_call_fiat_flow += fiat_notional_value
+                        call_ask_hit_premium += fiat_notional_value
+                    else:
+                        net_call_fiat_flow -= fiat_notional_value
+                        call_bid_hit_premium += fiat_notional_value
+                elif option_type == 'P':
+                    if direction == 'buy':
+                        net_put_fiat_flow += fiat_notional_value
+                        put_ask_hit_premium += fiat_notional_value
+                    else:
+                        net_put_fiat_flow -= fiat_notional_value
+                        put_bid_hit_premium += fiat_notional_value 
 
-                    try:
-                        expiry_dt = datetime.strptime(expiry_str, "%d%b%y").replace(tzinfo=timezone.utc).replace(hour=8, minute=0)
-                        days_to_expiry = (expiry_dt - now).total_seconds() / 86400.0
-                    except Exception: continue 
+                if days_to_expiry <= 3.0 and fiat_notional_value >= WHALE_THRESHOLD_USD:
+                    detected_whale_blocks.append({
+                        "trade_id": trade_id,
+                        "timestamp_epoch": timestamp_ms / 1000.0,
+                        "strike": strike,
+                        "type": option_type,
+                        "direction": direction,
+                        "fiat_value": fiat_notional_value
+                    })
 
-                    direction = trade.get('direction', 'buy')
-                    amount = float(trade.get('amount', 0))
-                    trade_index_price = float(trade.get('index_price', spot_price))
-                    fiat_notional_value = amount * trade_index_price
-                    timestamp_ms = trade.get('timestamp', int(now.timestamp() * 1000))
-                    iv_trade = float(trade.get('iv', 50)) / 100.0 
+            current_ts = now.strftime("%m-%d %H:%M") 
 
-                    try:
-                        t_trade = max(days_to_expiry, 0.01) / 365.0
-                        d1_trade = (math.log(trade_index_price / strike) + (0.5 * (iv_trade ** 2)) * t_trade) / (iv_trade * math.sqrt(t_trade))
-                        trade_delta = native_norm_cdf(d1_trade) if option_type == 'C' else (native_norm_cdf(d1_trade) - 1.0)
-                    except Exception: trade_delta = 0.5 if option_type == 'C' else -0.5 
+            # Push flow history snapshots with the latest execution checkpoint id bound safely
+            last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
+            is_duplicate = False
+            if last_logged_element:
+                if json.loads(last_logged_element).get("timestamp") == current_ts: is_duplicate = True
+            if not is_duplicate:
+                flow_snapshot = {
+                    "timestamp": current_ts, 
+                    "call_flow": round(net_call_fiat_flow, 2), 
+                    "put_flow": round(net_put_fiat_flow, 2),
+                    "ndf_drift": round(net_delta_premium_drift, 2), 
+                    "c_ask": round(call_ask_hit_premium, 2), 
+                    "c_bid": round(call_bid_hit_premium, 2),
+                    "p_ask": round(put_ask_hit_premium, 2), 
+                    "p_bid": round(put_bid_hit_premium, 2),
+                    "last_trade_id": new_most_recent_id
+                }
+                redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
 
-                    trade_ndf = trade_delta * fiat_notional_value
-                    if direction != 'buy': trade_ndf = -trade_ndf 
-                    net_delta_premium_drift += trade_ndf 
+            # Evict old flow logs
+            all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
+            records_to_remove_count = 0
+            for record in all_flow_records:
+                f_data = json.loads(record)
+                rec_time = datetime.strptime(f"{now.year}-{f_data['timestamp']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                if rec_time > now: rec_time = rec_time.replace(year=now.year - 1)
+                if (now - rec_time).total_seconds() > 86400.0: records_to_remove_count += 1
+            if records_to_remove_count > 0: redis.ltrim(REDIS_FLOW_KEY, records_to_remove_count, -1)
 
-                    if option_type == 'C':
-                        if direction == 'buy':
-                            net_call_fiat_flow += fiat_notional_value
-                            call_ask_hit_premium += fiat_notional_value
-                        else:
-                            net_call_fiat_flow -= fiat_notional_value
-                            call_bid_hit_premium += fiat_notional_value
-                    elif option_type == 'P':
-                        if direction == 'buy':
-                            net_put_fiat_flow += fiat_notional_value
-                            put_ask_hit_premium += fiat_notional_value
-                        else:
-                            net_put_fiat_flow -= fiat_notional_value
-                            put_bid_hit_premium += fiat_notional_value 
+            # Process whale tracking pushes
+            if detected_whale_blocks:
+                existing_whale_records = redis.lrange(REDIS_WHALE_KEY, 0, -1)
+                known_ids = {json.loads(r)["trade_id"] for r in existing_whale_records if r}
+                for block in detected_whale_blocks:
+                    if block["trade_id"] not in known_ids:
+                        redis.rpush(REDIS_WHALE_KEY, json.dumps(block)) 
 
-                    if days_to_expiry <= 3.0 and fiat_notional_value >= WHALE_THRESHOLD_USD:
-                        detected_whale_blocks.append({
-                            "trade_id": trade_id,
-                            "timestamp_epoch": timestamp_ms / 1000.0,
-                            "strike": strike,
-                            "type": option_type,
-                            "direction": direction,
-                            "fiat_value": fiat_notional_value
-                        })
+            # Evict expired whale logs
+            all_whale_records = redis.lrange(REDIS_WHALE_KEY, 0, -1)
+            whale_remove_count = 0
+            current_time_epoch = now.timestamp() 
+            for r in all_whale_records:
+                if (current_time_epoch - json.loads(r)["timestamp_epoch"]) > 86400.0: whale_remove_count += 1
+            if whale_remove_count > 0: redis.ltrim(REDIS_WHALE_KEY, whale_remove_count, -1)
 
-                    # Add trade to the memory safe deduplication arrays
-                    trade_time_epoch = timestamp_ms / 1000.0
-                    processed_trade_ids.add(trade_id)
-                    trade_expiry_tracker.append((trade_time_epoch, trade_id))
+            # Process hourly open interest distribution mapping
+            if now.minute <= 4:
+                hourly_time_tag = now.strftime("%m-%d %H:%M")
+                last_oi_element = redis.lindex(REDIS_OI_MIGRATION_KEY, -1)
+                if last_oi_element and json.loads(last_oi_element).get("timestamp") == hourly_time_tag:
+                    redis.rpop(REDIS_OI_MIGRATION_KEY)
 
-                current_ts = now.strftime("%m-%d %H:%M") 
+                base_df = pd.DataFrame(parsed_options)
+                oi_snapshot_map = {}
+                if not base_df.empty:
+                    base_df['strike_bucket'] = base_df['strike'].apply(lambda x: round(x / 1000.0) * 1000)
+                    oi_snapshot_map = base_df.groupby('strike_bucket')['oi'].sum().to_dict()
+                    oi_snapshot_map = {str(k): float(v) for k, v in oi_snapshot_map.items()} 
 
-                # 4. Check for duplicates anywhere in the recent tail logs
-                all_recent_flows = redis.lrange(REDIS_FLOW_KEY, -5, -1)
-                is_duplicate = False
-                if all_recent_flows:
-                    for record in all_recent_flows:
-                        if record and json.loads(record).get("timestamp") == current_ts:
-                            is_duplicate = True
-                            break
+                oi_history_snapshot = {"timestamp": hourly_time_tag, "oi_distribution": oi_snapshot_map}
+                redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
+                redis.ltrim(REDIS_OI_MIGRATION_KEY, -168, -1)
 
-                if not is_duplicate:
-                    flow_snapshot = {
-                        "timestamp": current_ts, "call_flow": round(net_call_fiat_flow, 2), "put_flow": round(net_put_fiat_flow, 2),
-                        "ndf_drift": round(net_delta_premium_drift, 2), "c_ask": round(call_ask_hit_premium, 2), "c_bid": round(call_bid_hit_premium, 2),
-                        "p_ask": round(put_ask_hit_premium, 2), "p_bid": round(put_bid_hit_premium, 2)
-                    }
-                    redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
-
-                # 5. Evict records older than 24h
-                all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
-                records_to_remove_count = 0
-                for record in all_flow_records:
-                    f_data = json.loads(record)
-                    rec_time = datetime.strptime(f"{now.year}-{f_data['timestamp']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-                    if rec_time > now: rec_time = rec_time.replace(year=now.year - 1)
-                    if (now - rec_time).total_seconds() > 86400.0: records_to_remove_count += 1
-                if records_to_remove_count > 0: redis.ltrim(REDIS_FLOW_KEY, records_to_remove_count, -1)
-
-                # 6. Process whale records
-                if detected_whale_blocks:
-                    existing_whale_records = redis.lrange(REDIS_WHALE_KEY, 0, -1)
-                    known_ids = {json.loads(r)["trade_id"] for r in existing_whale_records if r}
-                    for block in detected_whale_blocks:
-                        if block["trade_id"] not in known_ids:
-                            redis.rpush(REDIS_WHALE_KEY, json.dumps(block)) 
-
-                all_whale_records = redis.lrange(REDIS_WHALE_KEY, 0, -1)
-                whale_remove_count = 0
-                current_time_epoch = now.timestamp() 
-                for r in all_whale_records:
-                    if (current_time_epoch - json.loads(r)["timestamp_epoch"]) > 86400.0: whale_remove_count += 1
-                if whale_remove_count > 0: redis.ltrim(REDIS_WHALE_KEY, whale_remove_count, -1)
-
-                # 7. Hourly Open Interest snapshot mapping engine (Gated between Minute 0 and 4)
-                if now.minute <= 4:
-                    hourly_time_tag = now.strftime("%m-%d %H:%M")
-                    last_oi_element = redis.lindex(REDIS_OI_MIGRATION_KEY, -1)
-                    if last_oi_element and json.loads(last_oi_element).get("timestamp") == hourly_time_tag:
-                        redis.rpop(REDIS_OI_MIGRATION_KEY)
-
-                    base_df = pd.DataFrame(parsed_options)
-                    oi_snapshot_map = {}
-                    if not base_df.empty:
-                        base_df['strike_bucket'] = base_df['strike'].apply(lambda x: round(x / 1000.0) * 1000)
-                        oi_snapshot_map = base_df.groupby('strike_bucket')['oi'].sum().to_dict()
-                        oi_snapshot_map = {str(k): float(v) for k, v in oi_snapshot_map.items()} 
-
-                    oi_history_snapshot = {"timestamp": hourly_time_tag, "oi_distribution": oi_snapshot_map}
-                    redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
-                    redis.ltrim(REDIS_OI_MIGRATION_KEY, -168, -1)
-
-                # Lock the worker out from firing again during this active minute block
-                last_processed_minute = now.minute
-                print("Background interval sync complete.")
-                
+            print("Background state sync complete.")
         except Exception as loop_ex:
             print(f"Background Loop Error encountered: {loop_ex}")
             
-        # Wake up every 15 seconds to check if a new 5-minute threshold has arrived
-        time.sleep(15)
+        time.sleep(300) # Force thread sleep window exactly matching your cron 5-minute schedule
 
 def fetch_deribit_gex(currency="BTC"):
     """Fetches and calculates current state visual metrics exclusively for chart render steps."""
@@ -622,6 +632,8 @@ def main(page: ft.Page):
     rv_metric_txt = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
     vol_variance_txt = ft.Text("0.0% (Neutral)", size=14, weight=ft.FontWeight.BOLD) 
 
+    grid_lines_config = ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5)
+
     speed_curr_txt = ft.Text("0.00", size=14, weight=ft.FontWeight.W_600)
     speed_down_txt = ft.Text("0.00", size=14, weight=ft.FontWeight.W_600)
     speed_up_txt = ft.Text("0.00", size=14, weight=ft.FontWeight.W_600)
@@ -648,63 +660,53 @@ def main(page: ft.Page):
     anomaly_txt_3rd = ft.Text("--", size=14, weight=ft.FontWeight.W_600, color=ft.colors.CYAN_200) 
 
     gex_bar_chart_3d = ft.BarChart(bar_groups=[], bottom_axis=net_axis_3d,
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240) 
 
     abs_gex_chart_3d = ft.BarChart(
         bar_groups=[], bottom_axis=abs_axis_3d,
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240
     ) 
 
     gex_bar_chart_1m = ft.BarChart(
         bar_groups=[], bottom_axis=net_axis_1m,
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240) 
 
     abs_gex_chart_1m = ft.BarChart(
         bar_groups=[], bottom_axis=abs_axis_1m,
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240
     ) 
 
     vanna_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=vanna_bottom_axis,
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240
     ) 
 
     oi_migration_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=oi_migration_bottom_axis,
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240
     ) 
 
     velocity_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=velocity_bottom_axis,
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240
     ) 
 
     whale_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=whale_bottom_axis,
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=260
     ) 
 
     id_skew_bar_chart = ft.BarChart(
-        bar_groups=[], bottom_axis=iv_bottom_axis,
-        left_axis=iv_left_axis,
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
-        vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
+        bar_groups=[], bottom_axis=iv_bottom_axis, left_axis=iv_left_axis,
+        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240
     ) 
 
