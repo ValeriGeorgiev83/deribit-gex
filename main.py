@@ -438,9 +438,6 @@ def fetch_deribit_gex(currency="BTC"):
     df_chart_range_3d['strike_bucket'] = df_chart_range_3d['strike'].apply(lambda x: round(x / 500.0) * 500)
     bucket_data_3d = df_chart_range_3d.groupby('strike_bucket').agg({'gex': 'sum'}) 
 
-    bucket_oi_calls_3d = df_chart_range_3d[df_chart_range_3d['type'] == 'C'].groupby('strike_bucket')['oi'].sum()
-    bucket_oi_puts_3d = df_chart_range_3d[df_chart_range_3d['type'] == 'P'].groupby('strike_bucket')['oi'].sum()
-
     df_chart_range_1m = base_df[base_df['days_to_expiry'] <= 30.0][(base_df['strike'] >= lower_bound) & (base_df['strike'] <= upper_bound)].copy()
     df_chart_range_1m['strike_bucket'] = df_chart_range_1m['strike'].apply(lambda x: round(x / 500.0) * 500)
     bucket_data_1m = df_chart_range_1m.groupby('strike_bucket').agg({'gex': 'sum', 'vanna': 'sum', 'volume': 'sum', 'oi': 'sum'}) 
@@ -458,23 +455,10 @@ def fetch_deribit_gex(currency="BTC"):
         vanna_val = bucket_data_1m['vanna'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
         iv_skew_val = bucket_iv_map.get(b_strike, 0.0) 
 
-        b_vol = bucket_data_1m['volume'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
-        b_oi = bucket_data_1m['oi'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
-        velocity_pct = (b_vol / b_oi * 100.0) if b_oi > 0 else 0.0 
-
-        oi_call_wall_val = bucket_oi_calls_3d.get(b_strike, 0.0)
-        oi_put_wall_val = bucket_oi_puts_3d.get(b_strike, 0.0)
-
         chart_matrix.append({
             "index": idx, "strike": b_strike,
-            "gex_3d": gex_3d_val, "abs_gex_3d": abs(gex_3d_val),
-            "gex_1m": gex_1m_val, "abs_gex_1m": abs(gex_1m_val),
-            "vanna_exposure": vanna_val,
-            "vanna_flow": vanna_val * iv_shift_multiplier,
-            "velocity_ratio": velocity_pct,
-            "iv_skew": iv_skew_val,
-            "oi_call_wall": oi_call_wall_val,
-            "oi_put_wall": oi_put_wall_val
+            "gex_3d": gex_3d_val, "gex_1m": gex_1m_val,
+            "vanna_exposure": vanna_val, "iv_skew": iv_skew_val
         }) 
 
     realized_vol_10d_val = calculate_realized_vol_10d(currency) 
@@ -529,7 +513,6 @@ def main(page: ft.Page):
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     vanna_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     oi_migration_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
-    velocity_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_left_axis = ft.ChartAxis(labels=[], labels_size=42) 
 
@@ -590,10 +573,6 @@ def main(page: ft.Page):
     ndf_drift_metric_txt = ft.Text("$0.0M", size=14, weight=ft.FontWeight.BOLD)
     ndf_structural_signal_txt = ft.Text("Neutral Absorption", size=14, weight=ft.FontWeight.BOLD) 
 
-    anomaly_txt_1st = ft.Text("--", size=14, weight=ft.FontWeight.W_600, color=ft.colors.CYAN_200)
-    anomaly_txt_2nd = ft.Text("--", size=14, weight=ft.FontWeight.W_600, color=ft.colors.CYAN_200)
-    anomaly_txt_3rd = ft.Text("--", size=14, weight=ft.FontWeight.W_600, color=ft.colors.CYAN_200) 
-
     gex_bar_chart_3d = ft.BarChart(bar_groups=[], bottom_axis=net_axis_3d,
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240) 
@@ -611,12 +590,6 @@ def main(page: ft.Page):
 
     oi_migration_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=oi_migration_bottom_axis,
-        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
-        animate=True, interactive=True, height=240
-    ) 
-
-    velocity_bar_chart = ft.BarChart(
-        bar_groups=[], bottom_axis=velocity_bottom_axis,
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240
     ) 
@@ -827,7 +800,6 @@ def main(page: ft.Page):
             groups_net_1m = []
             groups_vanna = []
             groups_oi_migration = []
-            groups_velocity = []
             iv_bar_groups = []
             new_labels = []
             
@@ -863,20 +835,14 @@ def main(page: ft.Page):
                 val_3d = item['gex_3d']
                 val_1m = item['gex_1m']
                 v_exposure = item['vanna_exposure']
-                vel_ratio = item['velocity_ratio']
                 iv_val_item = item['iv_skew']
 
-                # --- CUSTOM 3D COLOR HEX CODES INTEGRATED HERE ---
                 groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color="#0cd56e" if val_3d >= 0 else "#e91841", width=6, border_radius=1)]))
-
                 groups_net_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_1m, color="#bab7ab" if val_1m >= 0 else "#1661b4", width=6, border_radius=1)]))
                 groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a" if v_exposure >= 0 else ft.colors.WHITE70, width=6, border_radius=1)])) 
 
                 oi_delta = historical_oi_deltas.get(strike_val, 0.0)
                 groups_oi_migration.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=oi_delta, color="#35c2b3" if oi_delta >= 0 else "#7948be", width=6, border_radius=1)])) 
-
-                # --- CUSTOM YELLOW APPLIED TO INTRADAY VELOCITY CODES HERE ---
-                groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color=ft.colors.YELLOW, width=6, border_radius=1)]))
 
                 valid_ivs = [it['iv_skew'] for it in m['chart_data'] if it['iv_skew'] > 0]
                 max_iv_val = max(valid_ivs) if valid_ivs else 100.0
@@ -908,9 +874,6 @@ def main(page: ft.Page):
             oi_migration_bar_chart.bar_groups = groups_oi_migration
             oi_migration_bottom_axis.labels = list(new_labels)
 
-            velocity_bar_chart.bar_groups = groups_velocity
-            velocity_bottom_axis.labels = list(new_labels)
-
             id_skew_bar_chart.bar_groups = iv_bar_groups
             iv_bottom_axis.labels = list(new_labels)
             
@@ -928,15 +891,6 @@ def main(page: ft.Page):
 
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (1M)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_1m)),
-        
-        create_section_header("INTRADAY GAMMA VELOCITY PROFILE (VOLUME / OI)"),
-        ft.Card(content=ft.Container(padding=15, content=ft.Column([
-            velocity_bar_chart,
-            ft.Container(height=10),
-            ui_row_item("1st Anomaly", anomaly_txt_1st),
-            ui_row_item("2nd Anomaly", anomaly_txt_2nd),
-            ui_row_item("3rd Anomaly", anomaly_txt_3rd)
-        ]))),
 
         create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
