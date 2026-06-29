@@ -144,18 +144,13 @@ def background_data_worker(currency="BTC"):
             
             slice_index = None
             if last_processed_id and last_processed_id in incoming_ids:
-                # Deribit provides historical feeds ordered from newest to oldest.
                 slice_index = incoming_ids.index(last_processed_id)
                 
-            # Filter the processing loop array based on our checkpoint conditions
             if slice_index is not None:
-                # Process only trades that occurred AFTER the boundary trade (elements before its index)
                 active_trades_subset = trades_list[:slice_index]
             else:
-                # Guard Condition 1 & 2: Process the full 1000 trades if first-run or ID scrolled off-screen
                 active_trades_subset = trades_list
 
-            # Safe update for the most recent transaction checkpoint element
             new_most_recent_id = str(trades_list[0].get('trade_id', '')) if trades_list else last_processed_id
 
             for trade in active_trades_subset:
@@ -204,7 +199,6 @@ def background_data_worker(currency="BTC"):
 
             current_ts = now.strftime("%m-%d %H:%M") 
 
-            # Push flow history snapshots with the latest execution checkpoint id bound safely
             last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
             is_duplicate = False
             if last_logged_element:
@@ -223,7 +217,6 @@ def background_data_worker(currency="BTC"):
                 }
                 redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
 
-            # Evict old flow logs
             all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
             records_to_remove_count = 0
             for record in all_flow_records:
@@ -233,7 +226,6 @@ def background_data_worker(currency="BTC"):
                 if (now - rec_time).total_seconds() > 86400.0: records_to_remove_count += 1
             if records_to_remove_count > 0: redis.ltrim(REDIS_FLOW_KEY, records_to_remove_count, -1)
 
-            # Process hourly open interest distribution mapping
             if now.minute <= 4:
                 hourly_time_tag = now.strftime("%m-%d %H:%M")
                 last_oi_element = redis.lindex(REDIS_OI_MIGRATION_KEY, -1)
@@ -243,7 +235,7 @@ def background_data_worker(currency="BTC"):
                 base_df = pd.DataFrame(parsed_options)
                 oi_snapshot_map = {}
                 if not base_df.empty:
-                    base_df['strike_bucket'] = base_df['strike'].apply(lambda x: round(x / 1000.0) * 1000)
+                    base_df['strike_bucket'] = base_df['strike'].apply(lambda x: round(x / 500.0) * 500)
                     oi_snapshot_map = base_df.groupby('strike_bucket')['oi'].sum().to_dict()
                     oi_snapshot_map = {str(k): float(v) for k, v in oi_snapshot_map.items()} 
 
@@ -255,7 +247,7 @@ def background_data_worker(currency="BTC"):
         except Exception as loop_ex:
             print(f"Background Loop Error encountered: {loop_ex}")
             
-        time.sleep(300) # Force thread sleep window matching cron schedule
+        time.sleep(300)
 
 def fetch_deribit_gex(currency="BTC"):
     """Fetches and calculates current state visual metrics exclusively for chart render steps."""
@@ -405,7 +397,7 @@ def fetch_deribit_gex(currency="BTC"):
         if pain < min_pain: min_pain, max_pain_level = pain, s 
 
     df_3d_copy = df_3d.copy()
-    df_3d_copy['macro_bucket'] = df_3d_copy['strike'].apply(lambda x: round(x / 1000.0) * 1000)
+    df_3d_copy['macro_bucket'] = df_3d_copy['strike'].apply(lambda x: round(x / 500.0) * 500)
     macro_grouped = df_3d_copy.groupby('macro_bucket')['gex'].sum().sort_index() 
 
     flip_level = spot_price
@@ -441,27 +433,28 @@ def fetch_deribit_gex(currency="BTC"):
     total_p_ask = sum(f.get("p_ask", 0.0) for f in valid_flow_records) if valid_flow_records else 0.0
     total_p_bid = sum(f.get("p_bid", 0.0) for f in valid_flow_records) if valid_flow_records else 0.0
 
-    center_spot_1k = round(spot_price / 1000.0) * 1000
-    lower_bound = center_spot_1k - 8000
-    upper_bound = center_spot_1k + 8000
-    target_buckets = list(range(int(lower_bound), int(upper_bound) + 1000, 1000)) 
+    # --- ADJUST RANGE FOR $500 STRIKE PRECISION IN DASHBOARD PANELS ---
+    center_spot_500 = round(spot_price / 500.0) * 500
+    lower_bound = center_spot_500 - 6000
+    upper_bound = center_spot_500 + 6000
+    target_buckets = list(range(int(lower_bound), int(upper_bound) + 500, 500)) 
 
     df_chart_range_3d = df_3d[(df_3d['strike'] >= lower_bound) & (df_3d['strike'] <= upper_bound)].copy()
-    df_chart_range_3d['strike_bucket'] = df_chart_range_3d['strike'].apply(lambda x: round(x / 1000.0) * 1000)
+    df_chart_range_3d['strike_bucket'] = df_chart_range_3d['strike'].apply(lambda x: round(x / 500.0) * 500)
     bucket_data_3d = df_chart_range_3d.groupby('strike_bucket').agg({'gex': 'sum'}) 
 
-    # Extract Call Walls and Put Walls directly from Open Interest pools <= 3 days out
+    # Extract Call Walls and Put Walls directly from Open Interest pools <= 3 days out on $500 buckets
     bucket_oi_calls_3d = df_chart_range_3d[df_chart_range_3d['type'] == 'C'].groupby('strike_bucket')['oi'].sum()
     bucket_oi_puts_3d = df_chart_range_3d[df_chart_range_3d['type'] == 'P'].groupby('strike_bucket')['oi'].sum()
 
     df_chart_range_1m = base_df[base_df['days_to_expiry'] <= 30.0][(base_df['strike'] >= lower_bound) & (base_df['strike'] <= upper_bound)].copy()
-    df_chart_range_1m['strike_bucket'] = df_chart_range_1m['strike'].apply(lambda x: round(x / 1000.0) * 1000)
+    df_chart_range_1m['strike_bucket'] = df_chart_range_1m['strike'].apply(lambda x: round(x / 500.0) * 500)
     bucket_data_1m = df_chart_range_1m.groupby('strike_bucket').agg({'gex': 'sum', 'vanna': 'sum', 'volume': 'sum', 'oi': 'sum'}) 
 
     df_7d_range = df_7d[(df_7d['strike'] >= lower_bound) & (df_7d['strike'] <= upper_bound)].copy() if not df_7d.empty else pd.DataFrame()
     bucket_iv_map = {}
     if not df_7d_range.empty:
-        df_7d_range['strike_bucket'] = df_7d_range['strike'].apply(lambda x: round(x / 1000.0) * 1000)
+        df_7d_range['strike_bucket'] = df_7d_range['strike'].apply(lambda x: round(x / 500.0) * 500)
         bucket_iv_map = df_7d_range.groupby('strike_bucket')['iv'].mean().to_dict() 
 
     chart_matrix = []
@@ -475,7 +468,7 @@ def fetch_deribit_gex(currency="BTC"):
         b_oi = bucket_data_1m['oi'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
         velocity_pct = (b_vol / b_oi * 100.0) if b_oi > 0 else 0.0 
 
-        # Pull exact OI counts by side for the near-term profile chart mapping
+        # Pull exact near-term wall parameters
         oi_call_wall_val = bucket_oi_calls_3d.get(b_strike, 0.0)
         oi_put_wall_val = bucket_oi_puts_3d.get(b_strike, 0.0)
 
@@ -626,7 +619,6 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     ) 
 
-    # New layout chart for Open Interest Near-Term Walls profile visualization
     walls_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=walls_bottom_axis,
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
@@ -869,7 +861,6 @@ def main(page: ft.Page):
                         historical_oi_deltas[float(k_strike)] = float(t1_data[k_strike]) - float(t0_data.get(k_strike, 0.0))
             except Exception: pass 
 
-            # Initialize each list separately on its own line to prevent unpacking type exceptions
             groups_net_3d = []
             groups_abs_3d = []
             groups_walls_3d = []
@@ -890,6 +881,32 @@ def main(page: ft.Page):
                     min_dist = dist
                     spot_index = item['index'] 
 
+            max_abs_vanna_exposure = 0.0001
+            max_abs_oi_delta = 0.0001 
+            max_wall_oi = 0.0001
+
+            for item in m['chart_data']:
+                if abs(item['vanna_exposure']) > max_abs_vanna_exposure: max_abs_vanna_exposure = abs(item['vanna_exposure']) 
+                stk = item['strike']
+                oi_change = historical_oi_deltas.get(stk, 0.0)
+                if abs(oi_change) > max_abs_oi_delta: max_abs_oi_delta = abs(oi_change) 
+                
+                if item['oi_call_wall'] > max_wall_oi: max_wall_oi = item['oi_call_wall']
+                if item['oi_put_wall'] > max_wall_oi: max_wall_oi = item['oi_put_wall']
+
+            vanna_exposure_bound = max_abs_vanna_exposure * 1.15
+            vanna_bar_chart.min_y = -vanna_exposure_bound
+            vanna_bar_chart.max_y = vanna_exposure_bound 
+
+            oi_migration_bound = max_abs_oi_delta * 1.15
+            oi_migration_bar_chart.min_y = -oi_migration_bound
+            oi_migration_bar_chart.max_y = oi_migration_bound 
+
+            # Match Option Walls chart boundaries symmetrically above/below zero line
+            walls_bound = max_wall_oi * 1.15
+            walls_bar_chart.min_y = -walls_bound
+            walls_bar_chart.max_y = walls_bound
+
             for item in m['chart_data']:
                 strike_val = item['strike']
                 is_spot = (item['index'] == spot_index)
@@ -901,19 +918,19 @@ def main(page: ft.Page):
                 vel_ratio = item['velocity_ratio']
                 iv_val_item = item['iv_skew']
                 
-                # Extract structured walls
+                # Calls are placed above zero (positive), Puts are forced below zero (negative)
                 c_wall_oi = item['oi_call_wall']
-                p_wall_oi = item['oi_put_wall']
+                p_wall_oi = -item['oi_put_wall']
 
                 groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color=ft.colors.GREEN_400 if val_3d >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
                 groups_abs_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_3d, color=ft.colors.YELLOW, width=12, border_radius=2)]))
                 
-                # Append rods dynamically tracking the Open Interest sizes side by side
+                # Near-term walls rod mapping
                 groups_walls_3d.append(ft.BarChartGroup(
                     x=item['index'],
                     bar_rods=[
-                        ft.BarChartRod(from_y=0, to_y=c_wall_oi, color=ft.colors.GREEN_ACCENT_400, width=6, border_radius=1),
-                        ft.BarChartRod(from_y=0, to_y=p_wall_oi, color=ft.colors.RED_ACCENT_400, width=6, border_radius=1)
+                        ft.BarChartRod(from_y=0, to_y=c_wall_oi, color=ft.colors.GREEN_ACCENT_400, width=10, border_radius=2),
+                        ft.BarChartRod(from_y=0, to_y=p_wall_oi, color=ft.colors.RED_ACCENT_400, width=10, border_radius=2)
                     ]
                 ))
 
@@ -941,7 +958,8 @@ def main(page: ft.Page):
                     bar_rods=[ft.BarChartRod(from_y=floor_y, to_y=iv_val_item if iv_val_item > 0 else floor_y, color=ft.colors.ORANGE_700, width=12, border_radius=2)]
                 ))
                 
-                if strike_val % 2000 == 0:
+                # Axis labels printed at every $1,000 mark to keep the upgraded $500 window uncluttered
+                if strike_val % 1000 == 0:
                     label_color = ft.colors.BLUE_200 if is_spot else ft.colors.GREY_400
                     new_labels.append(ft.ChartAxisLabel(value=item['index'], label=ft.Text(f"{strike_val/1000:.0f}k", size=10, color=label_color, rotate=45, weight=ft.FontWeight.BOLD if is_spot else ft.FontWeight.NORMAL)))
             
@@ -950,7 +968,6 @@ def main(page: ft.Page):
             abs_gex_chart_3d.bar_groups = groups_abs_3d
             abs_axis_3d.labels = new_labels
 
-            # Load rods directly to layout view
             walls_bar_chart.bar_groups = groups_walls_3d
             walls_bottom_axis.labels = new_labels
 
@@ -990,13 +1007,13 @@ def main(page: ft.Page):
             ui_row_item("Put Concentration (P2)", p2_txt)
         ]))),
 
-        # --- CORRECTED BG -> BGCOLOR PARAMETERS INSIDE THIS NEW CONTAINER ---
+        # --- ORIENTED DIRECTIONALLY: CALLS ABOVE / PUTS BELOW ---
         create_section_header("NEAR-TERM OPTION WALLS BY OPEN INTEREST (<= 3D EXPIRY)"),
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
             walls_bar_chart,
             ft.Row([
-                ft.Row([ft.Container(width=10, height=10, bgcolor=ft.colors.GREEN_ACCENT_400), ft.Text("Call Walls (OI)", size=11, color=ft.colors.GREY_400)]),
-                ft.Row([ft.Container(width=10, height=10, bgcolor=ft.colors.RED_ACCENT_400), ft.Text("Put Walls (OI)", size=11, color=ft.colors.GREY_400)])
+                ft.Row([ft.Container(width=10, height=10, bgcolor=ft.colors.GREEN_ACCENT_400), ft.Text("Calls (Above Zero Line)", size=11, color=ft.colors.GREY_400)]),
+                ft.Row([ft.Container(width=10, height=10, bgcolor=ft.colors.RED_ACCENT_400), ft.Text("Puts (Below Zero Line)", size=11, color=ft.colors.GREY_400)])
             ], alignment=ft.MainAxisAlignment.CENTER, spacing=20)
         ]))),
 
@@ -1103,8 +1120,6 @@ def main(page: ft.Page):
     refresh_dashboard()
 
 if __name__ == "__main__":
-    # Start up independent daemon worker loop BEFORE launching Flet UI engine
     worker_thread = threading.Thread(target=background_data_worker, daemon=True)
     worker_thread.start()
-    
     ft.app(target=main, port=int(os.environ.get("PORT", 8080)), host="0.0.0.0", view=None)
