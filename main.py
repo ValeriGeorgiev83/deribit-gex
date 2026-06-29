@@ -16,10 +16,8 @@ redis = Redis(
     token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
 )
 REDIS_FLOW_KEY = "deribit_flow_24h_history"
-REDIS_WHALE_KEY = "deribit_whale_blocks_24h"
 REDIS_OI_MIGRATION_KEY = "deribit_oi_hourly_history"
 MAX_HISTORY_POINTS = 3500
-WHALE_THRESHOLD_USD = 500000.0 
 
 # Keep track of the previous ATM IV to find live volatility direction velocity
 last_known_atm_iv = [50.0] 
@@ -73,7 +71,7 @@ def calculate_realized_vol_10d(currency="BTC"):
 def background_data_worker(currency="BTC"):
     """
     Independent data collection engine running in a separate thread.
-    Saves inflows, metrics, whales, and migrations to Upstash automatically every 5 minutes.
+    Saves inflows, metrics, and migrations to Upstash automatically every 5 minutes.
     Tracks state using previous execution's last trade ID to slice overlapping transactions.
     """
     print("Background Upstash Processing Worker Loop Engaged.")
@@ -122,7 +120,6 @@ def background_data_worker(currency="BTC"):
             net_call_fiat_flow = 0.0
             net_put_fiat_flow = 0.0
             net_delta_premium_drift = 0.0
-            detected_whale_blocks = [] 
 
             call_ask_hit_premium = 0.0
             call_bid_hit_premium = 0.0
@@ -148,7 +145,6 @@ def background_data_worker(currency="BTC"):
             slice_index = None
             if last_processed_id and last_processed_id in incoming_ids:
                 # Deribit provides historical feeds ordered from newest to oldest.
-                # Find the index of the previously parsed trade boundary.
                 slice_index = incoming_ids.index(last_processed_id)
                 
             # Filter the processing loop array based on our checkpoint conditions
@@ -179,8 +175,6 @@ def background_data_worker(currency="BTC"):
                 amount = float(trade.get('amount', 0))
                 trade_index_price = float(trade.get('index_price', spot_price))
                 fiat_notional_value = amount * trade_index_price
-                trade_id = str(trade.get('trade_id', ''))
-                timestamp_ms = trade.get('timestamp', int(now.timestamp() * 1000))
                 iv_trade = float(trade.get('iv', 50)) / 100.0 
 
                 try:
@@ -207,16 +201,6 @@ def background_data_worker(currency="BTC"):
                     else:
                         net_put_fiat_flow -= fiat_notional_value
                         put_bid_hit_premium += fiat_notional_value 
-
-                if days_to_expiry <= 3.0 and fiat_notional_value >= WHALE_THRESHOLD_USD:
-                    detected_whale_blocks.append({
-                        "trade_id": trade_id,
-                        "timestamp_epoch": timestamp_ms / 1000.0,
-                        "strike": strike,
-                        "type": option_type,
-                        "direction": direction,
-                        "fiat_value": fiat_notional_value
-                    })
 
             current_ts = now.strftime("%m-%d %H:%M") 
 
@@ -249,22 +233,6 @@ def background_data_worker(currency="BTC"):
                 if (now - rec_time).total_seconds() > 86400.0: records_to_remove_count += 1
             if records_to_remove_count > 0: redis.ltrim(REDIS_FLOW_KEY, records_to_remove_count, -1)
 
-            # Process whale tracking pushes
-            if detected_whale_blocks:
-                existing_whale_records = redis.lrange(REDIS_WHALE_KEY, 0, -1)
-                known_ids = {json.loads(r)["trade_id"] for r in existing_whale_records if r}
-                for block in detected_whale_blocks:
-                    if block["trade_id"] not in known_ids:
-                        redis.rpush(REDIS_WHALE_KEY, json.dumps(block)) 
-
-            # Evict expired whale logs
-            all_whale_records = redis.lrange(REDIS_WHALE_KEY, 0, -1)
-            whale_remove_count = 0
-            current_time_epoch = now.timestamp() 
-            for r in all_whale_records:
-                if (current_time_epoch - json.loads(r)["timestamp_epoch"]) > 86400.0: whale_remove_count += 1
-            if whale_remove_count > 0: redis.ltrim(REDIS_WHALE_KEY, whale_remove_count, -1)
-
             # Process hourly open interest distribution mapping
             if now.minute <= 4:
                 hourly_time_tag = now.strftime("%m-%d %H:%M")
@@ -287,7 +255,7 @@ def background_data_worker(currency="BTC"):
         except Exception as loop_ex:
             print(f"Background Loop Error encountered: {loop_ex}")
             
-        time.sleep(300) # Force thread sleep window exactly matching your cron 5-minute schedule
+        time.sleep(300) # Force thread sleep window matching cron schedule
 
 def fetch_deribit_gex(currency="BTC"):
     """Fetches and calculates current state visual metrics exclusively for chart render steps."""
@@ -473,29 +441,10 @@ def fetch_deribit_gex(currency="BTC"):
     total_p_ask = sum(f.get("p_ask", 0.0) for f in valid_flow_records) if valid_flow_records else 0.0
     total_p_bid = sum(f.get("p_bid", 0.0) for f in valid_flow_records) if valid_flow_records else 0.0
 
-    valid_whale_blocks = []
-    try:
-        all_whale_records = redis.lrange(REDIS_WHALE_KEY, 0, -1)
-        for r in all_whale_records:
-            valid_whale_blocks.append(json.loads(r))
-    except Exception: pass
-
     center_spot_1k = round(spot_price / 1000.0) * 1000
     lower_bound = center_spot_1k - 8000
     upper_bound = center_spot_1k + 8000
     target_buckets = list(range(int(lower_bound), int(upper_bound) + 1000, 1000)) 
-
-    whale_matrix = {b: {"bullish": 0.0, "bearish": 0.0} for b in target_buckets}
-    for b_trade in valid_whale_blocks:
-        rounded_strike = round(b_trade["strike"] / 1000.0) * 1000
-        if rounded_strike in whale_matrix:
-            opt_type = b_trade["type"]
-            side = b_trade["direction"]
-            val = b_trade["fiat_value"]
-            if (opt_type == "C" and side == "buy") or (opt_type == "P" and side == "sell"):
-                whale_matrix[rounded_strike]["bullish"] += val
-            elif (opt_type == "C" and side == "sell") or (opt_type == "P" and side == "buy"):
-                whale_matrix[rounded_strike]["bearish"] += val 
 
     df_chart_range_3d = df_3d[(df_3d['strike'] >= lower_bound) & (df_3d['strike'] <= upper_bound)].copy()
     df_chart_range_3d['strike_bucket'] = df_chart_range_3d['strike'].apply(lambda x: round(x / 1000.0) * 1000)
@@ -519,7 +468,6 @@ def fetch_deribit_gex(currency="BTC"):
         iv_skew_val = bucket_iv_map.get(b_strike, 0.0) 
 
         b_vol = bucket_data_1m['volume'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
-        # --- FIXED LINE: Check if b_strike is in the index, not b_oi ---
         b_oi = bucket_data_1m['oi'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
         velocity_pct = (b_vol / b_oi * 100.0) if b_oi > 0 else 0.0 
 
@@ -530,9 +478,7 @@ def fetch_deribit_gex(currency="BTC"):
             "vanna_exposure": vanna_val,
             "vanna_flow": vanna_val * iv_shift_multiplier,
             "velocity_ratio": velocity_pct,
-            "iv_skew": iv_skew_val,
-            "whale_bullish": whale_matrix[b_strike]["bullish"],
-            "whale_bearish": -whale_matrix[b_strike]["bearish"]
+            "iv_skew": iv_skew_val
         }) 
 
     realized_vol_10d_val = calculate_realized_vol_10d(currency) 
@@ -590,7 +536,6 @@ def main(page: ft.Page):
     vanna_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     oi_migration_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     velocity_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
-    whale_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     iv_left_axis = ft.ChartAxis(labels=[], labels_size=42) 
 
@@ -697,12 +642,6 @@ def main(page: ft.Page):
         bar_groups=[], bottom_axis=velocity_bottom_axis,
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240
-    ) 
-
-    whale_bar_chart = ft.BarChart(
-        bar_groups=[], bottom_axis=whale_bottom_axis,
-        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
-        animate=True, interactive=True, height=260
     ) 
 
     id_skew_bar_chart = ft.BarChart(
@@ -923,7 +862,7 @@ def main(page: ft.Page):
                         historical_oi_deltas[float(k_strike)] = float(t1_data[k_strike]) - float(t0_data.get(k_strike, 0.0))
             except Exception: pass 
 
-            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_oi_migration, groups_velocity, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], [], [], float('inf'), -1 
+            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_oi_migration, groups_velocity, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], [], float('inf'), -1 
 
             max_abs_vanna_exposure = 0.0001
             max_abs_oi_delta = 0.0001 
@@ -978,7 +917,6 @@ def main(page: ft.Page):
             for item in m['chart_data']:
                 strike_val, is_spot = item['strike'], (item['index'] == spot_index)
                 val_3d, abs_3d, val_1m, abs_1m, v_exposure, vel_ratio, iv_val_item = item['gex_3d'], item['abs_gex_3d'], item['gex_1m'], item['abs_gex_1m'], item['vanna_exposure'], item['velocity_ratio'], item['iv_skew']
-                w_bull, w_bear = item['whale_bullish'], item['whale_bearish'] 
 
                 groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color=ft.colors.GREEN_400 if val_3d >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
                 groups_abs_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_3d, color=ft.colors.YELLOW, width=12, border_radius=2)]))
@@ -991,13 +929,6 @@ def main(page: ft.Page):
                 groups_oi_migration.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=oi_delta, color="#35c2b3" if oi_delta >= 0 else "#7948be", width=12, border_radius=2)])) 
 
                 groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=12, border_radius=2)]))
-
-                net_whale_at_strike = w_bull + w_bear  
-                whale_rod_color = ft.colors.GREEN_400 if net_whale_at_strike >= 0 else ft.colors.RED_400
-                groups_whale.append(ft.BarChartGroup(
-                    x=item['index'],
-                    bar_rods=[ft.BarChartRod(from_y=w_bear, to_y=w_bull, color=whale_rod_color, width=12, border_radius=1)]
-                ))
 
                 iv_bar_groups.append(ft.BarChartGroup(
                     x=item['index'],
@@ -1026,9 +957,6 @@ def main(page: ft.Page):
 
             velocity_bar_chart.bar_groups = groups_velocity
             velocity_bottom_axis.labels = list(new_labels)
-
-            whale_bar_chart.bar_groups = groups_whale
-            whale_bottom_axis.labels = list(new_labels)
 
             id_skew_bar_chart.bar_groups = iv_bar_groups
             iv_bottom_axis.labels = list(new_labels)
@@ -1151,10 +1079,7 @@ def main(page: ft.Page):
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("24H Net Delta Flow Drift", ndf_drift_metric_txt),
             ui_row_item("Tape", ndf_structural_signal_txt)
-        ]))),
-
-        create_section_header("LARGE LOT BLOCKS DETECTOR"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=whale_bar_chart))
+        ])))
     )
     refresh_dashboard()
 
