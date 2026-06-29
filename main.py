@@ -344,7 +344,11 @@ def fetch_deribit_gex(currency="BTC"):
                 "timestamp": current_ts,
                 "call_flow": round(net_call_fiat_flow, 2),
                 "put_flow": round(net_put_fiat_flow, 2),
-                "ndf_drift": round(net_delta_premium_drift, 2)
+                "ndf_drift": round(net_delta_premium_drift, 2),
+                "c_ask": round(call_ask_hit_premium, 2),
+                "c_bid": round(call_bid_hit_premium, 2),
+                "p_ask": round(put_ask_hit_premium, 2),
+                "p_bid": round(put_bid_hit_premium, 2)
             }
             redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
         all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
@@ -365,6 +369,18 @@ def fetch_deribit_gex(currency="BTC"):
     net_flow_bias = total_accumulated_call_flow - total_accumulated_put_flow 
 
     total_cumulative_ndf_drift = sum(f.get("ndf_drift", 0.0) for f in valid_flow_records) if valid_flow_records else net_delta_premium_drift 
+
+    # --- 24H CUMULATIVE AGGRESSOR TOTALS ENGINE ---
+    if valid_flow_records:
+        total_c_ask = sum(f.get("c_ask", 0.0) for f in valid_flow_records)
+        total_c_bid = sum(f.get("c_bid", 0.0) for f in valid_flow_records)
+        total_p_ask = sum(f.get("p_ask", 0.0) for f in valid_flow_records)
+        total_p_bid = sum(f.get("p_bid", 0.0) for f in valid_flow_records)
+    else:
+        total_c_ask = call_ask_hit_premium
+        total_c_bid = call_bid_hit_premium
+        total_p_ask = put_ask_hit_premium
+        total_p_bid = put_bid_hit_premium
 
     try:
         if detected_whale_blocks:
@@ -470,8 +486,8 @@ def fetch_deribit_gex(currency="BTC"):
         "trend_score": total_cohesion_points, "pt_gex": pt_gex, "pt_flow": pt_flow, "pt_price": pt_price, "pt_vol": pt_vol,
         "net_charm_flow": hourly_charm_rehedge_contracts,
         "ndf_drift_total": total_cumulative_ndf_drift,
-        "aggr_call_ask": call_ask_hit_premium, "aggr_call_bid": call_bid_hit_premium,
-        "aggr_put_ask": put_ask_hit_premium, "aggr_put_bid": put_bid_hit_premium,
+        "aggr_call_ask": total_c_ask, "aggr_call_bid": total_c_bid,
+        "aggr_put_ask": total_p_ask, "aggr_put_bid": total_p_bid,
         "speed_current": net_speed_current, "speed_down_1000": net_speed_down_1000, "speed_up_1000": net_speed_up_1000,
         "iv_direction": "EXPANDING" if iv_shift_multiplier > 0 else "CRUSHING",
         "raw_option_dataframe": bucket_data_1m
