@@ -11,7 +11,7 @@ from datetime import datetime, timezone, timedelta
 from upstash_redis import Redis
 redis = Redis(
     url="https://large-ghost-131173.upstash.io",
-    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0TzlhOWJmZGM1MTg5OWViZDIxMw"
+    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
 )
 REDIS_FLOW_KEY = "deribit_flow_24h_history"
 REDIS_WHALE_KEY = "deribit_whale_blocks_24h"
@@ -976,19 +976,15 @@ def main(page: ft.Page):
 
                 groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=12, border_radius=2)]))
 
-                # --- UNIFIED VERTICAL CO-AXIS STACKING LOGIC ---
-                # Stacking multiple rods into one single group to wipe out horizontal shifting completely
-                whale_rods = []
-                if w_bull > 0:
-                    whale_rods.append(ft.BarChartRod(from_y=0, to_y=w_bull, color=ft.colors.GREEN_400, width=12, border_radius=1))
-                if w_bear < 0:
-                    whale_rods.append(ft.BarChartRod(from_y=0, to_y=w_bear, color=ft.colors.RED_400, width=12, border_radius=1))
-                if not whale_rods:
-                    whale_rods.append(ft.BarChartRod(from_y=0, to_y=0, color=ft.colors.TRANSPARENT, width=12))
-
+                # --- UNIFIED HORIZONTAL CENTERLINE STACK ---
+                # Pack both rods into ONE group list item and clear rod index tracking to lock to center line
                 groups_whale.append(ft.BarChartGroup(
                     x=item['index'],
-                    bar_rods=whale_rods
+                    group_by_rod_index=False, # Strips out horizontal multi-column offset logic completely
+                    bar_rods=[
+                        ft.BarChartRod(from_y=0, to_y=w_bull, color=ft.colors.GREEN_400, width=12, border_radius=1),
+                        ft.BarChartRod(from_y=0, to_y=w_bear, color=ft.colors.RED_400, width=12, border_radius=1)
+                    ]
                 ))
 
                 iv_bar_groups.append(ft.BarChartGroup(
