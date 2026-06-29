@@ -519,7 +519,8 @@ def fetch_deribit_gex(currency="BTC"):
         iv_skew_val = bucket_iv_map.get(b_strike, 0.0) 
 
         b_vol = bucket_data_1m['volume'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
-        b_oi = bucket_data_1m['oi'].get(b_strike, 0.0) if b_oi in bucket_data_1m.index else 0.0
+        # --- FIXED LINE: Check if b_strike is in the index, not b_oi ---
+        b_oi = bucket_data_1m['oi'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
         velocity_pct = (b_vol / b_oi * 100.0) if b_oi > 0 else 0.0 
 
         chart_matrix.append({
