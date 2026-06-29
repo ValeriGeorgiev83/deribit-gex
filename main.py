@@ -257,7 +257,7 @@ def fetch_deribit_gex(currency="BTC"):
     net_delta_premium_drift = 0.0
     detected_whale_blocks = [] 
 
-    call_ask_hit_premium = 0.0(C2)
+    call_ask_hit_premium = 0.0
     call_bid_hit_premium = 0.0
     put_ask_hit_premium = 0.0
     put_bid_hit_premium = 0.0 
