@@ -78,7 +78,6 @@ def background_data_worker(currency="BTC"):
     while True:
         try:
             print(f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}] Processing backend metrics write...")
-            # Fetch raw details
             idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
             idx_res = requests.get(idx_url).json()
             spot_price = float(idx_res['result']['index_price']) 
@@ -116,7 +115,6 @@ def background_data_worker(currency="BTC"):
 
                 parsed_options.append({'strike': strike, 'oi': oi, 'days_to_expiry': days_to_expiry})
 
-            # Process option tape trade entries
             net_call_fiat_flow = 0.0
             net_put_fiat_flow = 0.0
             net_delta_premium_drift = 0.0
@@ -130,7 +128,6 @@ def background_data_worker(currency="BTC"):
             trades_res = requests.get(trades_url).json()
             trades_list = trades_res.get('result', {}).get('trades', []) 
 
-            # --- DYNAMIC RANGE RESOLUTION ENGINE ---
             last_processed_id = None
             try:
                 last_logged_element = redis.lindex(REDIS_FLOW_KEY, -1)
@@ -139,7 +136,6 @@ def background_data_worker(currency="BTC"):
             except Exception as e:
                 print(f"Error fetching last process state: {e}")
 
-            # Identify if our checkpoint exists inside the incoming payload array
             incoming_ids = [str(t.get('trade_id', '')) for t in trades_list]
             
             slice_index = None
@@ -530,10 +526,7 @@ def main(page: ft.Page):
     page.padding = 14 
 
     net_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
-    abs_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
-    walls_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
-    abs_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     vanna_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     oi_migration_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     velocity_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
@@ -551,11 +544,6 @@ def main(page: ft.Page):
     put_gex_txt_3d = ft.Text("0.0k", size=14, weight=ft.FontWeight.W_600)
     net_gex_txt_3d = ft.Text("0.0k", size=14, weight=ft.FontWeight.BOLD)
     weight_txt_3d = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600, color="#ab47bc") 
-
-    c1_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREEN_400) 
-    c2_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREEN_400)
-    p1_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.RED_400) 
-    p2_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.RED_400) 
 
     skew_25d_txt = ft.Text("0.00% (Neutral)", size=14, weight=ft.FontWeight.BOLD) 
 
@@ -610,28 +598,10 @@ def main(page: ft.Page):
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240) 
 
-    abs_gex_chart_3d = ft.BarChart(
-        bar_groups=[], bottom_axis=abs_axis_3d,
-        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
-        animate=True, interactive=True, height=240
-    ) 
-
-    walls_bar_chart = ft.BarChart(
-        bar_groups=[], bottom_axis=walls_bottom_axis,
-        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
-        animate=True, interactive=True, height=240
-    )
-
     gex_bar_chart_1m = ft.BarChart(
         bar_groups=[], bottom_axis=net_axis_1m,
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240) 
-
-    abs_gex_chart_1m = ft.BarChart(
-        bar_groups=[], bottom_axis=abs_axis_1m,
-        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
-        animate=True, interactive=True, height=240
-    ) 
 
     vanna_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=vanna_bottom_axis,
@@ -705,11 +675,6 @@ def main(page: ft.Page):
             net_gex_txt_3d.value = fmt_gex(net_3d)
             net_gex_txt_3d.color = ft.colors.ORANGE_400 if net_3d >= 0 else ft.colors.BLUE_400
             weight_txt_3d.value = f"{m['call_weight_3d']:.1f}%" 
-
-            c1_txt.value = f"${m['c1_wall']:,.0f}"
-            c2_txt.value = f"${m['c2_wall']:,.0f}"
-            p1_txt.value = f"${m['p1_wall']:,.0f}"
-            p2_txt.value = f"${m['p2_wall']:,.0f}" 
 
             pain_txt.value = f"${m['max_pain']:,.0f}"
             flip_txt.value = f"${m['flip']:,.0f}"
@@ -859,10 +824,7 @@ def main(page: ft.Page):
             except Exception: pass 
 
             groups_net_3d = []
-            groups_abs_3d = []
-            groups_walls_3d = []
             groups_net_1m = []
-            groups_abs_1m = []
             groups_vanna = []
             groups_oi_migration = []
             groups_velocity = []
@@ -880,16 +842,12 @@ def main(page: ft.Page):
 
             max_abs_vanna_exposure = 0.0001
             max_abs_oi_delta = 0.0001 
-            max_wall_oi = 0.0001
 
             for item in m['chart_data']:
                 if abs(item['vanna_exposure']) > max_abs_vanna_exposure: max_abs_vanna_exposure = abs(item['vanna_exposure']) 
                 stk = item['strike']
                 oi_change = historical_oi_deltas.get(stk, 0.0)
                 if abs(oi_change) > max_abs_oi_delta: max_abs_oi_delta = abs(oi_change) 
-                
-                if item['oi_call_wall'] > max_wall_oi: max_wall_oi = item['oi_call_wall']
-                if item['oi_put_wall'] > max_wall_oi: max_wall_oi = item['oi_put_wall']
 
             vanna_exposure_bound = max_abs_vanna_exposure * 1.15
             vanna_bar_chart.min_y = -vanna_exposure_bound
@@ -899,46 +857,26 @@ def main(page: ft.Page):
             oi_migration_bar_chart.min_y = -oi_migration_bound
             oi_migration_bar_chart.max_y = oi_migration_bound 
 
-            walls_bound = max_wall_oi * 1.15
-            walls_bar_chart.min_y = -walls_bound
-            walls_bar_chart.max_y = walls_bound
-
             for item in m['chart_data']:
                 strike_val = item['strike']
                 is_spot = (item['index'] == spot_index)
                 val_3d = item['gex_3d']
-                abs_3d = item['abs_gex_3d']
                 val_1m = item['gex_1m']
-                abs_1m = item['abs_gex_1m']
                 v_exposure = item['vanna_exposure']
                 vel_ratio = item['velocity_ratio']
                 iv_val_item = item['iv_skew']
-                
-                c_wall_oi = item['oi_call_wall']
-                p_wall_oi = -item['oi_put_wall']
 
-                # --- UPGRADED ALL BAR CHART RODS: WIDTH SHIFTED DOWN FROM 12 TO 6 FOR SLIMMER GEOMETRY ---
-                groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color=ft.colors.GREEN_400 if val_3d >= 0 else ft.colors.RED_400, width=6, border_radius=1)]))
-                groups_abs_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_3d, color=ft.colors.YELLOW, width=6, border_radius=1)]))
-                
-                # Side-by-side walls rods width changed from 10 down to 4 to prevent compression overlaps
-                groups_walls_3d.append(ft.BarChartGroup(
-                    x=item['index'],
-                    bar_rods=[
-                        ft.BarChartRod(from_y=0, to_y=c_wall_oi, color=ft.colors.GREEN_ACCENT_400, width=4, border_radius=1),
-                        ft.BarChartRod(from_y=0, to_y=p_wall_oi, color=ft.colors.RED_ACCENT_400, width=4, border_radius=1)
-                    ]
-                ))
+                # --- CUSTOM 3D COLOR HEX CODES INTEGRATED HERE ---
+                groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color="#0cd56e" if val_3d >= 0 else "#e91841", width=6, border_radius=1)]))
 
                 groups_net_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_1m, color="#bab7ab" if val_1m >= 0 else "#1661b4", width=6, border_radius=1)]))
-                groups_abs_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_1m, color="#ab47bc", width=6, border_radius=1)])) 
-
                 groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a" if v_exposure >= 0 else ft.colors.WHITE70, width=6, border_radius=1)])) 
 
                 oi_delta = historical_oi_deltas.get(strike_val, 0.0)
                 groups_oi_migration.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=oi_delta, color="#35c2b3" if oi_delta >= 0 else "#7948be", width=6, border_radius=1)])) 
 
-                groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=6, border_radius=1)]))
+                # --- CUSTOM YELLOW APPLIED TO INTRADAY VELOCITY CODES HERE ---
+                groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color=ft.colors.YELLOW, width=6, border_radius=1)]))
 
                 valid_ivs = [it['iv_skew'] for it in m['chart_data'] if it['iv_skew'] > 0]
                 max_iv_val = max(valid_ivs) if valid_ivs else 100.0
@@ -960,16 +898,9 @@ def main(page: ft.Page):
             
             gex_bar_chart_3d.bar_groups = groups_net_3d
             net_axis_3d.labels = new_labels
-            abs_gex_chart_3d.bar_groups = groups_abs_3d
-            abs_axis_3d.labels = new_labels
-
-            walls_bar_chart.bar_groups = groups_walls_3d
-            walls_bottom_axis.labels = new_labels
 
             gex_bar_chart_1m.bar_groups = groups_net_1m
             net_axis_1m.labels = list(new_labels)
-            abs_gex_chart_1m.bar_groups = groups_abs_1m
-            abs_axis_1m.labels = list(new_labels)
             
             vanna_bar_chart.bar_groups = groups_vanna
             vanna_bottom_axis.labels = list(new_labels)
@@ -991,34 +922,12 @@ def main(page: ft.Page):
         
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (3D)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_3d)),
-        
-        create_section_header("ABS GAMMA EXPOSURE BY STRIKE (3D)"),
-        ft.Card(content=ft.Container(padding=15, content=ft.Column([
-            abs_gex_chart_3d,
-            ft.Container(height=10),
-            ui_row_item("Call Concentration (C1)", c1_txt),
-            ui_row_item("Call Concentration (C2)", c2_txt),
-            ui_row_item("Put Concentration (P1)", p1_txt),
-            ui_row_item("Put Concentration (P2)", p2_txt)
-        ]))),
-
-        create_section_header("NEAR-TERM OPTION WALLS BY OPEN INTEREST (<= 3D EXPIRY)"),
-        ft.Card(content=ft.Container(padding=15, content=ft.Column([
-            walls_bar_chart,
-            ft.Row([
-                ft.Row([ft.Container(width=10, height=10, bgcolor=ft.colors.GREEN_ACCENT_400), ft.Text("Calls (Above Zero Line)", size=11, color=ft.colors.GREY_400)]),
-                ft.Row([ft.Container(width=10, height=10, bgcolor=ft.colors.RED_ACCENT_400), ft.Text("Puts (Below Zero Line)", size=11, color=ft.colors.GREY_400)])
-            ], alignment=ft.MainAxisAlignment.CENTER, spacing=20)
-        ]))),
 
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
 
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (1M)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_1m)),
-
-        create_section_header("ABS GAMMA EXPOSURE BY STRIKE (1M)"),
-        ft.Card(content=ft.Container(padding=15, content=abs_gex_chart_1m)),
         
         create_section_header("INTRADAY GAMMA VELOCITY PROFILE (VOLUME / OI)"),
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
