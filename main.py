@@ -450,6 +450,10 @@ def fetch_deribit_gex(currency="BTC"):
     df_chart_range_3d['strike_bucket'] = df_chart_range_3d['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     bucket_data_3d = df_chart_range_3d.groupby('strike_bucket').agg({'gex': 'sum'}) 
 
+    # Extract Call Walls and Put Walls directly from Open Interest pools <= 3 days out
+    bucket_oi_calls_3d = df_chart_range_3d[df_chart_range_3d['type'] == 'C'].groupby('strike_bucket')['oi'].sum()
+    bucket_oi_puts_3d = df_chart_range_3d[df_chart_range_3d['type'] == 'P'].groupby('strike_bucket')['oi'].sum()
+
     df_chart_range_1m = base_df[base_df['days_to_expiry'] <= 30.0][(base_df['strike'] >= lower_bound) & (base_df['strike'] <= upper_bound)].copy()
     df_chart_range_1m['strike_bucket'] = df_chart_range_1m['strike'].apply(lambda x: round(x / 1000.0) * 1000)
     bucket_data_1m = df_chart_range_1m.groupby('strike_bucket').agg({'gex': 'sum', 'vanna': 'sum', 'volume': 'sum', 'oi': 'sum'}) 
@@ -471,6 +475,10 @@ def fetch_deribit_gex(currency="BTC"):
         b_oi = bucket_data_1m['oi'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
         velocity_pct = (b_vol / b_oi * 100.0) if b_oi > 0 else 0.0 
 
+        # Pull exact OI counts by side for the near-term profile chart mapping
+        oi_call_wall_val = bucket_oi_calls_3d.get(b_strike, 0.0)
+        oi_put_wall_val = bucket_oi_puts_3d.get(b_strike, 0.0)
+
         chart_matrix.append({
             "index": idx, "strike": b_strike,
             "gex_3d": gex_3d_val, "abs_gex_3d": abs(gex_3d_val),
@@ -478,7 +486,9 @@ def fetch_deribit_gex(currency="BTC"):
             "vanna_exposure": vanna_val,
             "vanna_flow": vanna_val * iv_shift_multiplier,
             "velocity_ratio": velocity_pct,
-            "iv_skew": iv_skew_val
+            "iv_skew": iv_skew_val,
+            "oi_call_wall": oi_call_wall_val,
+            "oi_put_wall": oi_put_wall_val
         }) 
 
     realized_vol_10d_val = calculate_realized_vol_10d(currency) 
@@ -498,7 +508,7 @@ def fetch_deribit_gex(currency="BTC"):
         "max_pain": max_pain_level, "flip": flip_level, "breakout": breakout_price,
         "resistance": resistance_level, "support": support_level, "call_inflow": total_accumulated_call_flow,
         "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "chart_data": chart_matrix,
-        "skew_25d": skew_25d_val, "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level,
+        "skew_25d": 0.0, "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level,
         "implied_vol": atm_iv, "realized_vol": realized_vol_10d_val,
         "trend_score": total_cohesion_points, "pt_gex": pt_gex, "pt_flow": pt_flow, "pt_price": pt_price, "pt_vol": pt_vol,
         "net_charm_flow": hourly_charm_rehedge_contracts,
@@ -531,6 +541,7 @@ def main(page: ft.Page):
 
     net_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
+    walls_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     abs_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     vanna_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
@@ -614,6 +625,13 @@ def main(page: ft.Page):
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240
     ) 
+
+    # New layout chart for Open Interest Near-Term Walls profile visualization
+    walls_bar_chart = ft.BarChart(
+        bar_groups=[], bottom_axis=walls_bottom_axis,
+        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
+        animate=True, interactive=True, height=240
+    )
 
     gex_bar_chart_1m = ft.BarChart(
         bar_groups=[], bottom_axis=net_axis_1m,
@@ -703,17 +721,6 @@ def main(page: ft.Page):
             c2_txt.value = f"${m['c2_wall']:,.0f}"
             p1_txt.value = f"${m['p1_wall']:,.0f}"
             p2_txt.value = f"${m['p2_wall']:,.0f}" 
-
-            skew_val = m['skew_25d']
-            if skew_val <= 0.4 and skew_val >= -0.4:
-                skew_25d_txt.value = f"{skew_val:+.2f}% (Neutral)"
-                skew_25d_txt.color = ft.colors.GREY_400
-            elif skew_val > 0.4:
-                skew_25d_txt.value = f"+{skew_val:.2f}% (Bearish)"
-                skew_25d_txt.color = ft.colors.RED_400
-            else:
-                skew_25d_txt.value = f"{skew_val:.2f}% (Bullish)"
-                skew_25d_txt.color = ft.colors.GREEN_400 
 
             pain_txt.value = f"${m['max_pain']:,.0f}"
             flip_txt.value = f"${m['flip']:,.0f}"
@@ -862,64 +869,56 @@ def main(page: ft.Page):
                         historical_oi_deltas[float(k_strike)] = float(t1_data[k_strike]) - float(t0_data.get(k_strike, 0.0))
             except Exception: pass 
 
-            groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_oi_migration, groups_velocity, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], [], float('inf'), -1 
-
-            max_abs_vanna_exposure = 0.0001
-            max_abs_oi_delta = 0.0001 
+            # Initialize each list separately on its own line to prevent unpacking type exceptions
+            groups_net_3d = []
+            groups_abs_3d = []
+            groups_walls_3d = []
+            groups_net_1m = []
+            groups_abs_1m = []
+            groups_vanna = []
+            groups_oi_migration = []
+            groups_velocity = []
+            iv_bar_groups = []
+            new_labels = []
+            
+            min_dist = float('inf')
+            spot_index = -1 
 
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
-                if dist < min_dist: min_dist, spot_index = dist, item['index'] 
-
-                if abs(item['vanna_exposure']) > max_abs_vanna_exposure: max_abs_vanna_exposure = abs(item['vanna_exposure']) 
+                if dist < min_dist: 
+                    min_dist = dist
+                    spot_index = item['index'] 
 
                 stk = item['strike']
-                oi_change = historical_oi_deltas.get(stk, 0.0)
-                if abs(oi_change) > max_abs_oi_delta: max_abs_oi_delta = abs(oi_change) 
-
-            vanna_exposure_bound = max_abs_vanna_exposure * 1.15
-            vanna_bar_chart.min_y = -vanna_exposure_bound
-            vanna_bar_chart.max_y = vanna_exposure_bound 
-
-            oi_migration_bound = max_abs_oi_delta * 1.15
-            oi_migration_bar_chart.min_y = -oi_migration_bound
-            oi_migration_bar_chart.max_y = oi_migration_bound 
-
-            valid_ivs = [item['iv_skew'] for item in m['chart_data'] if item['iv_skew'] > 0]
-            max_iv_val = max(valid_ivs) if valid_ivs else 100.0
-            min_iv_val = min(valid_ivs) if valid_ivs else 0.0 
-
-            floor_y = math.floor(min_iv_val / 10.0) * 10.0
-            ceil_y = math.ceil(max_iv_val / 10.0) * 10.0
-            if ceil_y == floor_y: ceil_y += 10.0 
-
-            id_skew_bar_chart.min_y = floor_y
-            id_skew_bar_chart.max_y = ceil_y 
-
-            y_iv_labels = []
-            curr_y = floor_y
-            while curr_y <= ceil_y:
-                y_iv_labels.append(ft.ChartAxisLabel(value=curr_y, label=ft.Text(f"{int(curr_y)}%", size=10, color=ft.colors.GREY_400)))
-                curr_y += 10.0
-            iv_left_axis.labels = y_iv_labels 
-
-            sorted_velocity_items = sorted(m['chart_data'], key=lambda x: x['velocity_ratio'], reverse=True)
-            top_anomalies = [item for item in sorted_velocity_items if item['velocity_ratio'] > 0][:3] 
-
-            anomaly_txt_1st.value = "No dynamic target detected"
-            anomaly_txt_2nd.value = "--"
-            anomaly_txt_3rd.value = "--" 
-
-            if len(top_anomalies) >= 1: anomaly_txt_1st.value = f"${top_anomalies[0]['strike']/1000:.0f}k Strike ({top_anomalies[0]['velocity_ratio']:.1f}%)" 
-            if len(top_anomalies) >= 2: anomaly_txt_2nd.value = f"${top_anomalies[1]['strike']/1000:.0f}k Strike ({top_anomalies[1]['velocity_ratio']:.1f}%)"
-            if len(top_anomalies) >= 3: anomaly_txt_3rd.value = f"${top_anomalies[2]['strike']/1000:.0f}k Strike ({top_anomalies[2]['velocity_ratio']:.1f}%)" 
 
             for item in m['chart_data']:
-                strike_val, is_spot = item['strike'], (item['index'] == spot_index)
-                val_3d, abs_3d, val_1m, abs_1m, v_exposure, vel_ratio, iv_val_item = item['gex_3d'], item['abs_gex_3d'], item['gex_1m'], item['abs_gex_1m'], item['vanna_exposure'], item['velocity_ratio'], item['iv_skew']
+                strike_val = item['strike']
+                is_spot = (item['index'] == spot_index)
+                val_3d = item['gex_3d']
+                abs_3d = item['abs_gex_3d']
+                val_1m = item['gex_1m']
+                abs_1m = item['abs_gex_1m']
+                v_exposure = item['vanna_exposure']
+                vel_ratio = item['velocity_ratio']
+                iv_val_item = item['iv_skew']
+                
+                # Extract structured walls
+                c_wall_oi = item['oi_call_wall']
+                p_wall_oi = item['oi_put_wall']
 
                 groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color=ft.colors.GREEN_400 if val_3d >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
                 groups_abs_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_3d, color=ft.colors.YELLOW, width=12, border_radius=2)]))
+                
+                # Append rods dynamically tracking the Open Interest sizes side by side
+                groups_walls_3d.append(ft.BarChartGroup(
+                    x=item['index'],
+                    bar_rods=[
+                        ft.BarChartRod(from_y=0, to_y=c_wall_oi, color=ft.colors.GREEN_ACCENT_400, width=6, border_radius=1),
+                        ft.BarChartRod(from_y=0, to_y=p_wall_oi, color=ft.colors.RED_ACCENT_400, width=6, border_radius=1)
+                    ]
+                ))
+
                 groups_net_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_1m, color="#bab7ab" if val_1m >= 0 else "#1661b4", width=12, border_radius=2)]))
                 groups_abs_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_1m, color="#ab47bc", width=12, border_radius=2)])) 
 
@@ -929,6 +928,15 @@ def main(page: ft.Page):
                 groups_oi_migration.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=oi_delta, color="#35c2b3" if oi_delta >= 0 else "#7948be", width=12, border_radius=2)])) 
 
                 groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=12, border_radius=2)]))
+
+                valid_ivs = [it['iv_skew'] for it in m['chart_data'] if it['iv_skew'] > 0]
+                max_iv_val = max(valid_ivs) if valid_ivs else 100.0
+                min_iv_val = min(valid_ivs) if valid_ivs else 0.0 
+                floor_y = math.floor(min_iv_val / 10.0) * 10.0
+                ceil_y = math.ceil(max_iv_val / 10.0) * 10.0
+                if ceil_y == floor_y: ceil_y += 10.0 
+                id_skew_bar_chart.min_y = floor_y
+                id_skew_bar_chart.max_y = ceil_y 
 
                 iv_bar_groups.append(ft.BarChartGroup(
                     x=item['index'],
@@ -943,6 +951,10 @@ def main(page: ft.Page):
             net_axis_3d.labels = new_labels
             abs_gex_chart_3d.bar_groups = groups_abs_3d
             abs_axis_3d.labels = new_labels
+
+            # Load rods directly to layout view
+            walls_bar_chart.bar_groups = groups_walls_3d
+            walls_bottom_axis.labels = new_labels
 
             gex_bar_chart_1m.bar_groups = groups_net_1m
             net_axis_1m.labels = list(new_labels)
@@ -963,7 +975,6 @@ def main(page: ft.Page):
             
             page.update()
 
-    # --- REMOVED REFRESH ELEVATEDBUTTON FROM ROW HEADER ---
     page.add(
         ft.Row([ft.Text("DERIBIT GEX DASHBOARD", size=20, weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.START),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("Bitcoin Spot Price", size=11, color=ft.colors.GREY_500), spot_price_container], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
@@ -975,10 +986,20 @@ def main(page: ft.Page):
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
             abs_gex_chart_3d,
             ft.Container(height=10),
-            ui_row_item("Call Concetration (C1)", c1_txt),
-            ui_row_item("Call Concetration (C2)", c2_txt),
-            ui_row_item("Put Concetration (P1)", p1_txt),
-            ui_row_item("Put Concetration (P2)", p2_txt)
+            ui_row_item("Call Concentration (C1)", c1_txt),
+            ui_row_item("Call Concentration (C2)", c2_txt),
+            ui_row_item("Put Concentration (P1)", p1_txt),
+            ui_row_item("Put Concentration (P2)", p2_txt)
+        ]))),
+
+        # --- NEW CARD INTEGRATED DIRECTLY BENEATH ABS GEX 3D TRACKER ---
+        create_section_header("NEAR-TERM OPTION WALLS BY OPEN INTEREST (<= 3D EXPIRY)"),
+        ft.Card(content=ft.Container(padding=15, content=ft.Column([
+            walls_bar_chart,
+            ft.Row([
+                ft.Row([ft.Container(width=10, height=10, bg=ft.colors.GREEN_ACCENT_400), ft.Text("Call Walls (OI)", size=11, color=ft.colors.GREY_400)]),
+                ft.Row([ft.Container(width=10, height=10, bg=ft.colors.RED_ACCENT_400), ft.Text("Put Walls (OI)", size=11, color=ft.colors.GREY_400)])
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=20)
         ]))),
 
         create_section_header("IMPORTANT LEVELS"),
@@ -1084,8 +1105,6 @@ def main(page: ft.Page):
     refresh_dashboard()
 
 if __name__ == "__main__":
-    # Start up independent daemon worker loop BEFORE launching Flet UI engine
     worker_thread = threading.Thread(target=background_data_worker, daemon=True)
     worker_thread.start()
-    
     ft.app(target=main, port=int(os.environ.get("PORT", 8080)), host="0.0.0.0", view=None)
