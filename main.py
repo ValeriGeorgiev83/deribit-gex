@@ -486,6 +486,10 @@ def fmt_signed_flow(val):
     sign = "+" if val > 0 else ""
     return f"{sign}{val / 1000000.0:,.1f}M" 
 
+def format_horizon_text(value):
+    action = "Expected to BUY" if value >= 0 else "Expected to SELL"
+    return f"{action} {abs(value):,.2f} BTC"
+
 def main(page: ft.Page):
     page.title = "DERIBIT GEX DASHBOARD"
     page.theme_mode = ft.ThemeMode.DARK
