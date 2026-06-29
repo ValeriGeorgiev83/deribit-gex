@@ -75,14 +75,25 @@ def background_data_worker(currency="BTC"):
     Independent data collection engine running in a separate thread.
     Saves inflows, metrics, whales, and migrations to Upstash automatically.
     Wakes up frequently to check for exact 5-minute clock marks to eliminate drift.
+    Uses an ID tracking engine to ensure no trade contract is ever counted twice.
     """
     print("Background Upstash Processing Worker Loop Engaged.")
     last_processed_minute = -1  # Prevent double-firing within the same minute chunk
+    
+    # Track unique trade records locally to completely prevent double-counting overlaps
+    processed_trade_ids = set()
+    trade_expiry_tracker = []  # List of tuples: (timestamp_epoch, trade_id)
 
     while True:
         try:
             now = datetime.now(timezone.utc)
+            current_epoch = now.timestamp()
             
+            # --- HOUSEKEEPING: Clear old trade IDs out of memory cache (> 2 hours / 7200s) ---
+            while trade_expiry_tracker and (current_epoch - trade_expiry_tracker[0][0]) > 7200:
+                _, old_id = trade_expiry_tracker.pop(0)
+                processed_trade_ids.discard(old_id)
+
             # Fire exactly on minutes divisible by 5 (0, 5, 10, 15, 20, etc.)
             if now.minute % 5 == 0 and now.minute != last_processed_minute:
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] Clock checkpoint hit. Processing metrics write...")
@@ -114,7 +125,7 @@ def background_data_worker(currency="BTC"):
                     
                     parsed_options.append({'strike': strike, 'oi': oi, 'days_to_expiry': days_to_expiry})
 
-                # 3. Fetch recent trades tape
+                # 3. Fetch recent trades tape with overlap filtering
                 net_call_fiat_flow = 0.0
                 net_put_fiat_flow = 0.0
                 net_delta_premium_drift = 0.0
@@ -130,6 +141,13 @@ def background_data_worker(currency="BTC"):
                 trades_list = trades_res.get('result', {}).get('trades', []) 
 
                 for trade in trades_list:
+                    trade_id = str(trade.get('trade_id', ''))
+                    if not trade_id: continue
+                    
+                    # CRITICAL ENGINE PROTECTION: Skip if this specific transaction was already handled
+                    if trade_id in processed_trade_ids:
+                        continue
+
                     ins_name = trade.get('instrument_name', '')
                     parts = ins_name.split('-')
                     if len(parts) < 4: continue 
@@ -146,7 +164,6 @@ def background_data_worker(currency="BTC"):
                     amount = float(trade.get('amount', 0))
                     trade_index_price = float(trade.get('index_price', spot_price))
                     fiat_notional_value = amount * trade_index_price
-                    trade_id = str(trade.get('trade_id', ''))
                     timestamp_ms = trade.get('timestamp', int(now.timestamp() * 1000))
                     iv_trade = float(trade.get('iv', 50)) / 100.0 
 
@@ -184,6 +201,11 @@ def background_data_worker(currency="BTC"):
                             "direction": direction,
                             "fiat_value": fiat_notional_value
                         })
+
+                    # Add trade to the memory safe deduplication arrays
+                    trade_time_epoch = timestamp_ms / 1000.0
+                    processed_trade_ids.add(trade_id)
+                    trade_expiry_tracker.append((trade_time_epoch, trade_id))
 
                 current_ts = now.strftime("%m-%d %H:%M") 
 
@@ -487,7 +509,7 @@ def fetch_deribit_gex(currency="BTC"):
         iv_skew_val = bucket_iv_map.get(b_strike, 0.0) 
 
         b_vol = bucket_data_1m['volume'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
-        b_oi = bucket_data_1m['oi'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
+        b_oi = bucket_data_1m['oi'].get(b_strike, 0.0) if b_oi in bucket_data_1m.index else 0.0
         velocity_pct = (b_vol / b_oi * 100.0) if b_oi > 0 else 0.0 
 
         chart_matrix.append({
