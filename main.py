@@ -635,6 +635,7 @@ def main(page: ft.Page):
 
     whale_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=whale_bottom_axis,
+        group_vertically=True,  # Align rods on a single X centerline
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         vertical_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5),
         animate=True, interactive=True, height=260
@@ -976,11 +977,12 @@ def main(page: ft.Page):
 
                 groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=12, border_radius=2)]))
 
+                # Vertically aligned rods via chart definition rules
                 groups_whale.append(ft.BarChartGroup(
                     x=item['index'],
                     bar_rods=[
-                        ft.BarChartRod(from_y=0, to_y=w_bull, color=ft.colors.GREEN_400, width=10, border_radius=1),
-                        ft.BarChartRod(from_y=0, to_y=w_bear, color=ft.colors.RED_400, width=10, border_radius=1)
+                        ft.BarChartRod(from_y=0, to_y=w_bull, color=ft.colors.GREEN_400, width=12, border_radius=1),
+                        ft.BarChartRod(from_y=0, to_y=w_bear, color=ft.colors.RED_400, width=12, border_radius=1)
                     ]
                 ))
 
