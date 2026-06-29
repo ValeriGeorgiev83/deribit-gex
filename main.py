@@ -432,9 +432,14 @@ def fetch_deribit_gex(currency="BTC"):
         vanna_val = bucket_data_1m['vanna'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
         iv_skew_val = bucket_iv_map.get(b_strike, 0.0)
         
-        b_vol = bucket_data_1m['volume'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
-        b_oi = bucket_data_1m['oi'].get(b_strike, 0.0) if b_oi in bucket_data_1m.index else 0.0
-        velocity_pct = (b_vol / b_oi * 100.0) if b_oi > 0 else 0.0
+        # Explicit initialization defaults to stop UnboundLocal errors inside pandas index matches
+        b_vol = 0.0
+        b_oi = 0.0
+        if not bucket_data_1m.empty and b_strike in bucket_data_1m.index:
+            b_vol = float(bucket_data_1m.loc[b_strike, 'volume'])
+            b_oi = float(bucket_data_1m.loc[b_strike, 'oi'])
+            
+        velocity_pct = (b_vol / b_oi * 100.0) if b_oi > 0.0 else 0.0
         
         chart_matrix.append({
             "index": idx, "strike": b_strike, 
@@ -634,6 +639,10 @@ def main(page: ft.Page):
     def ui_row_item(label, component):
         return ft.Container(content=ft.Row([ft.Text(label, size=14, color=ft.colors.GREY_300), component], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=ft.padding.symmetric(vertical=4))
 
+    def format_horizon_text(value):
+        action = "Expected to BUY" if value >= 0 else "Expected to SELL"
+        return f"{action} {abs(value):,.2f} BTC"
+
     def refresh_dashboard(e=None):
         m = fetch_deribit_gex("BTC")
         if m:
@@ -758,7 +767,7 @@ def main(page: ft.Page):
             time_now = datetime.now(timezone.utc)
             hourly_time_tag = time_now.strftime("%m-%d %H:%M")
             
-            # Gated Open Interest Log Logic (runs safely standalone)
+            # Gated Open Interest Log Logic (Safely parsed separately)
             if time_now.minute <= 4:
                 try:
                     last_oi_element = redis.lindex(REDIS_OI_MIGRATION_KEY, -1)
@@ -908,11 +917,11 @@ def main(page: ft.Page):
             oi_migration_bar_chart.max_y = oi_migration_bound
             
             valid_ivs = [item['iv_skew'] for item in m['chart_data'] if item['iv_skew'] > 0]
-            max_iv = max_iv if (max_iv := max(valid_ivs, default=100.0)) > 0 else 100.0
-            min_iv = min_iv if (min_iv := min(valid_ivs, default=0.0)) > 0 else 0.0
+            max_iv_val = max(valid_ivs) if valid_ivs else 100.0
+            min_iv_val = min(valid_ivs) if valid_ivs else 0.0
             
-            floor_y = math.floor(min_iv / 10.0) * 10.0
-            ceil_y = math.ceil(max_iv / 10.0) * 10.0
+            floor_y = math.floor(min_iv_val / 10.0) * 10.0
+            ceil_y = math.ceil(max_iv_val / 10.0) * 10.0
             if ceil_y == floor_y: ceil_y += 10.0
             
             id_skew_bar_chart.min_y = floor_y
