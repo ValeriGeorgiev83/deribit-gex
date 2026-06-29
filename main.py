@@ -415,8 +415,10 @@ def fetch_deribit_gex(currency="BTC"):
     upper_bound = center_spot_1k + 8000
     target_buckets = list(range(int(lower_bound), int(upper_bound) + 1000, 1000)) 
 
+    # --- FULL WHALE MATRIX LOGIC ENGINE ---
+    # Merge both active tape catches and database histories to secure zero line bars
     whale_matrix = {b: {"bullish": 0.0, "bearish": 0.0} for b in target_buckets}
-    for b_trade in valid_whale_blocks:
+    for b_trade in (valid_whale_blocks + detected_whale_blocks):
         rounded_strike = round(b_trade["strike"] / 1000.0) * 1000
         if rounded_strike in whale_matrix:
             opt_type = b_trade["type"]
@@ -976,17 +978,16 @@ def main(page: ft.Page):
 
                 groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=12, border_radius=2)]))
 
-                # --- UNIFIED CENTERLINE ZERO SPLIT ROD LOGIC ---
-                # Single rod spanning continuously from the bearish floor to the bullish ceiling
-                net_whale_at_strike = w_bull + w_bear  # w_bear is already negative
+                # --- PERFECT SOLID VERTICAL AXIS STACK ---
+                net_whale_at_strike = w_bull + w_bear  
                 whale_rod_color = ft.colors.GREEN_400 if net_whale_at_strike >= 0 else ft.colors.RED_400
                 
                 groups_whale.append(ft.BarChartGroup(
                     x=item['index'],
                     bar_rods=[
                         ft.BarChartRod(
-                            from_y=w_bear,  # Lower bound under zero line
-                            to_y=w_bull,    # Upper bound over zero line
+                            from_y=w_bear,  # Stretches seamlessly down to negative put flows
+                            to_y=w_bull,    # Stretches seamlessly up to positive call flows
                             color=whale_rod_color,
                             width=12,
                             border_radius=1
