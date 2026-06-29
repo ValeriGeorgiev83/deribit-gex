@@ -433,7 +433,7 @@ def fetch_deribit_gex(currency="BTC"):
         iv_skew_val = bucket_iv_map.get(b_strike, 0.0)
         
         b_vol = bucket_data_1m['volume'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
-        b_oi = bucket_data_1m['oi'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
+        b_oi = bucket_data_1m['oi'].get(b_strike, 0.0) if b_oi in bucket_data_1m.index else 0.0
         velocity_pct = (b_vol / b_oi * 100.0) if b_oi > 0 else 0.0
         
         chart_matrix.append({
@@ -754,6 +754,58 @@ def main(page: ft.Page):
                 speed_regime_txt.value = "Stable Net Gamma Profile"
                 speed_regime_txt.color = ft.colors.GREEN_400
 
+            # --- HOURLY GATED LOGGING GATEWAY SYSTEM ---
+            time_now = datetime.now(timezone.utc)
+            hourly_time_tag = time_now.strftime("%m-%d %H:%M")
+            
+            # Gated Open Interest Log Logic (runs safely standalone)
+            if time_now.minute <= 4:
+                try:
+                    last_oi_element = redis.lindex(REDIS_OI_MIGRATION_KEY, -1)
+                    if last_oi_element:
+                        try:
+                            last_oi_data = json.loads(last_oi_element)
+                            if last_oi_data.get("timestamp") == hourly_time_tag:
+                                redis.rpop(REDIS_OI_MIGRATION_KEY)
+                        except Exception: pass
+                        
+                    raw_oi_dataframe = m["raw_option_dataframe"]
+                    oi_snapshot_map = {}
+                    if not raw_oi_dataframe.empty:
+                        oi_snapshot_map = raw_oi_dataframe['oi'].to_dict()
+                        oi_snapshot_map = {str(k): float(v) for k, v in oi_snapshot_map.items()}
+                        
+                    oi_history_snapshot = {
+                        "timestamp": hourly_time_tag,
+                        "oi_distribution": oi_snapshot_map
+                    }
+                    
+                    if redis.llen(REDIS_OI_MIGRATION_KEY) == 0:
+                        dummy_snapshot = {
+                            "timestamp": (time_now - timedelta(minutes=1)).strftime("%m-%d %H:%M"),
+                            "oi_distribution": {k: float(v) * 0.95 for k, v in oi_snapshot_map.items()}
+                        }
+                        redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(dummy_snapshot))
+                        
+                    redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
+                    redis.ltrim(REDIS_OI_MIGRATION_KEY, -168, -1)
+                    
+                except Exception as ex: 
+                    print(f"Hourly Gated Database Log Failure: {ex}")
+
+            # --- HISTORICAL OI MIGRATION PARSING ENGINE ---
+            historical_oi_deltas = {}
+            try:
+                oi_snapshots = redis.lrange(REDIS_OI_MIGRATION_KEY, -2, -1)
+                if len(oi_snapshots) >= 2:
+                    t0_data = json.loads(oi_snapshots[0]).get("oi_distribution", {})
+                    t1_data = json.loads(oi_snapshots[1]).get("oi_distribution", {})
+                    
+                    for k_strike in t1_data.keys():
+                        historical_oi_deltas[float(k_strike)] = float(t1_data[k_strike]) - float(t0_data.get(k_strike, 0.0))
+            except Exception as ex:
+                print(f"Migration Parsing Fail: {ex}")
+
             scr = m['trend_score']
             gex_component_txt.value = f"{m['pt_gex']:.1f}"
             flow_component_txt.value = f"{m['pt_flow']:.1f}"
@@ -806,10 +858,6 @@ def main(page: ft.Page):
             total_3h_flow = charm_3h + gamma_press_3h
             total_6h_flow = charm_6h + gamma_press_6h
 
-            def format_horizon_text(value):
-                action = "Expected to BUY" if value >= 0 else "Expected to SELL"
-                return f"{action} {abs(value):,.2f} BTC"
-
             flow_1h_txt.value = format_horizon_text(total_1h_flow)
             flow_1h_txt.color = ft.colors.GREEN_400 if total_1h_flow >= 0 else ft.colors.RED_400
 
@@ -833,59 +881,6 @@ def main(page: ft.Page):
                 ndf_drift_metric_txt.color = ft.colors.GREY_400
                 ndf_structural_signal_txt.value = "Neutral Absorption"
                 ndf_structural_signal_txt.color = ft.colors.GREY_400
-            
-            # --- HOURLY GATED LOGGING GATEWAY SYSTEM ---
-            time_now = datetime.now(timezone.utc)
-            
-            # 1. Open Interest hourly gate constraint logic (< 4 mins)
-            if time_now.minute <= 4:
-                hourly_time_tag = time_now.strftime("%m-%d %H:00")
-                
-                try:
-                    last_oi_element = redis.lindex(REDIS_OI_MIGRATION_KEY, -1)
-                    if last_oi_element:
-                        try:
-                            last_oi_data = json.loads(last_oi_element)
-                            if last_oi_data.get("timestamp") == hourly_time_tag:
-                                redis.rpop(REDIS_OI_MIGRATION_KEY)
-                        except Exception: pass
-                        
-                    raw_oi_dataframe = m["raw_option_dataframe"]
-                    oi_snapshot_map = {}
-                    if not raw_oi_dataframe.empty:
-                        oi_snapshot_map = raw_oi_dataframe['oi'].to_dict()
-                        oi_snapshot_map = {str(k): float(v) for k, v in oi_snapshot_map.items()}
-                        
-                    oi_history_snapshot = {
-                        "timestamp": hourly_time_tag,
-                        "oi_distribution": oi_snapshot_map
-                    }
-                    
-                    if redis.llen(REDIS_OI_MIGRATION_KEY) == 0:
-                        dummy_snapshot = {
-                            "timestamp": (time_now - timedelta(hours=1)).strftime("%m-%d %H:00"),
-                            "oi_distribution": {k: float(v) * 0.95 for k, v in oi_snapshot_map.items()}
-                        }
-                        redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(dummy_snapshot))
-                        
-                    redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
-                    redis.ltrim(REDIS_OI_MIGRATION_KEY, -168, -1)
-                    
-                except Exception as ex: 
-                    print(f"Hourly Gated Database Log Failure: {ex}")
-
-            # --- HISTORICAL OI MIGRATION PARSING ENGINE ---
-            historical_oi_deltas = {}
-            try:
-                oi_snapshots = redis.lrange(REDIS_OI_MIGRATION_KEY, -2, -1)
-                if len(oi_snapshots) >= 2:
-                    t0_data = json.loads(oi_snapshots[0]).get("oi_distribution", {})
-                    t1_data = json.loads(oi_snapshots[1]).get("oi_distribution", {})
-                    
-                    for k_strike in t1_data.keys():
-                        historical_oi_deltas[float(k_strike)] = float(t1_data[k_strike]) - float(t0_data.get(k_strike, 0.0))
-            except Exception as ex:
-                print(f"Migration Parsing Fail: {ex}")
             
             groups_net_3d, groups_abs_3d, groups_net_1m, groups_abs_1m, groups_vanna, groups_oi_migration, groups_velocity, groups_whale, iv_bar_groups, new_labels, min_dist, spot_index = [], [], [], [], [], [], [], [], [], [], float('inf'), -1
             
