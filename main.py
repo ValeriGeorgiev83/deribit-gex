@@ -11,7 +11,7 @@ from datetime import datetime, timezone, timedelta
 from upstash_redis import Redis
 redis = Redis(
     url="https://large-ghost-131173.upstash.io",
-    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0TzlhOWJmZGM1MTg5OWViZDIxMw"
+    token="gQAAAAAAAgBlAAIgcDE2NmI0NGZkNDFiYTk0NzlhOWJmZGM1MTg5OWViZDIxMw"
 )
 REDIS_FLOW_KEY = "deribit_flow_24h_history"
 REDIS_WHALE_KEY = "deribit_whale_blocks_24h"
