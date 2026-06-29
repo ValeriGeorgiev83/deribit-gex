@@ -257,7 +257,7 @@ def fetch_deribit_gex(currency="BTC"):
     net_delta_premium_drift = 0.0
     detected_whale_blocks = [] 
 
-    call_ask_hit_premium = 0.0
+    call_ask_hit_premium = 0.0(C2)
     call_bid_hit_premium = 0.0
     put_ask_hit_premium = 0.0
     put_bid_hit_premium = 0.0 
@@ -976,14 +976,21 @@ def main(page: ft.Page):
 
                 groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=12, border_radius=2)]))
 
-                # --- UNIFIED HORIZONTAL CENTERLINE STACK ---
-                # Pack both rods into ONE group list item and clear rod index tracking to lock to center line
+                # --- UNIFIED CENTERLINE ZERO SPLIT ROD LOGIC ---
+                # Single rod spanning continuously from the bearish floor to the bullish ceiling
+                net_whale_at_strike = w_bull + w_bear  # w_bear is already negative
+                whale_rod_color = ft.colors.GREEN_400 if net_whale_at_strike >= 0 else ft.colors.RED_400
+                
                 groups_whale.append(ft.BarChartGroup(
                     x=item['index'],
-                    group_by_rod_index=False, # Strips out horizontal multi-column offset logic completely
                     bar_rods=[
-                        ft.BarChartRod(from_y=0, to_y=w_bull, color=ft.colors.GREEN_400, width=12, border_radius=1),
-                        ft.BarChartRod(from_y=0, to_y=w_bear, color=ft.colors.RED_400, width=12, border_radius=1)
+                        ft.BarChartRod(
+                            from_y=w_bear,  # Lower bound under zero line
+                            to_y=w_bull,    # Upper bound over zero line
+                            color=whale_rod_color,
+                            width=12,
+                            border_radius=1
+                        )
                     ]
                 ))
 
