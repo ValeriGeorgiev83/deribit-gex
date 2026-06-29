@@ -433,7 +433,6 @@ def fetch_deribit_gex(currency="BTC"):
     total_p_ask = sum(f.get("p_ask", 0.0) for f in valid_flow_records) if valid_flow_records else 0.0
     total_p_bid = sum(f.get("p_bid", 0.0) for f in valid_flow_records) if valid_flow_records else 0.0
 
-    # --- ADJUST RANGE FOR $500 STRIKE PRECISION IN DASHBOARD PANELS ---
     center_spot_500 = round(spot_price / 500.0) * 500
     lower_bound = center_spot_500 - 6000
     upper_bound = center_spot_500 + 6000
@@ -443,7 +442,6 @@ def fetch_deribit_gex(currency="BTC"):
     df_chart_range_3d['strike_bucket'] = df_chart_range_3d['strike'].apply(lambda x: round(x / 500.0) * 500)
     bucket_data_3d = df_chart_range_3d.groupby('strike_bucket').agg({'gex': 'sum'}) 
 
-    # Extract Call Walls and Put Walls directly from Open Interest pools <= 3 days out on $500 buckets
     bucket_oi_calls_3d = df_chart_range_3d[df_chart_range_3d['type'] == 'C'].groupby('strike_bucket')['oi'].sum()
     bucket_oi_puts_3d = df_chart_range_3d[df_chart_range_3d['type'] == 'P'].groupby('strike_bucket')['oi'].sum()
 
@@ -468,7 +466,6 @@ def fetch_deribit_gex(currency="BTC"):
         b_oi = bucket_data_1m['oi'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
         velocity_pct = (b_vol / b_oi * 100.0) if b_oi > 0 else 0.0 
 
-        # Pull exact near-term wall parameters
         oi_call_wall_val = bucket_oi_calls_3d.get(b_strike, 0.0)
         oi_put_wall_val = bucket_oi_puts_3d.get(b_strike, 0.0)
 
@@ -902,7 +899,6 @@ def main(page: ft.Page):
             oi_migration_bar_chart.min_y = -oi_migration_bound
             oi_migration_bar_chart.max_y = oi_migration_bound 
 
-            # Match Option Walls chart boundaries symmetrically above/below zero line
             walls_bound = max_wall_oi * 1.15
             walls_bar_chart.min_y = -walls_bound
             walls_bar_chart.max_y = walls_bound
@@ -918,31 +914,31 @@ def main(page: ft.Page):
                 vel_ratio = item['velocity_ratio']
                 iv_val_item = item['iv_skew']
                 
-                # Calls are placed above zero (positive), Puts are forced below zero (negative)
                 c_wall_oi = item['oi_call_wall']
                 p_wall_oi = -item['oi_put_wall']
 
-                groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color=ft.colors.GREEN_400 if val_3d >= 0 else ft.colors.RED_400, width=12, border_radius=2)]))
-                groups_abs_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_3d, color=ft.colors.YELLOW, width=12, border_radius=2)]))
+                # --- UPGRADED ALL BAR CHART RODS: WIDTH SHIFTED DOWN FROM 12 TO 6 FOR SLIMMER GEOMETRY ---
+                groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color=ft.colors.GREEN_400 if val_3d >= 0 else ft.colors.RED_400, width=6, border_radius=1)]))
+                groups_abs_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_3d, color=ft.colors.YELLOW, width=6, border_radius=1)]))
                 
-                # Near-term walls rod mapping
+                # Side-by-side walls rods width changed from 10 down to 4 to prevent compression overlaps
                 groups_walls_3d.append(ft.BarChartGroup(
                     x=item['index'],
                     bar_rods=[
-                        ft.BarChartRod(from_y=0, to_y=c_wall_oi, color=ft.colors.GREEN_ACCENT_400, width=10, border_radius=2),
-                        ft.BarChartRod(from_y=0, to_y=p_wall_oi, color=ft.colors.RED_ACCENT_400, width=10, border_radius=2)
+                        ft.BarChartRod(from_y=0, to_y=c_wall_oi, color=ft.colors.GREEN_ACCENT_400, width=4, border_radius=1),
+                        ft.BarChartRod(from_y=0, to_y=p_wall_oi, color=ft.colors.RED_ACCENT_400, width=4, border_radius=1)
                     ]
                 ))
 
-                groups_net_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_1m, color="#bab7ab" if val_1m >= 0 else "#1661b4", width=12, border_radius=2)]))
-                groups_abs_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_1m, color="#ab47bc", width=12, border_radius=2)])) 
+                groups_net_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_1m, color="#bab7ab" if val_1m >= 0 else "#1661b4", width=6, border_radius=1)]))
+                groups_abs_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=abs_1m, color="#ab47bc", width=6, border_radius=1)])) 
 
-                groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a" if v_exposure >= 0 else ft.colors.WHITE70, width=12, border_radius=2)])) 
+                groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a" if v_exposure >= 0 else ft.colors.WHITE70, width=6, border_radius=1)])) 
 
                 oi_delta = historical_oi_deltas.get(strike_val, 0.0)
-                groups_oi_migration.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=oi_delta, color="#35c2b3" if oi_delta >= 0 else "#7948be", width=12, border_radius=2)])) 
+                groups_oi_migration.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=oi_delta, color="#35c2b3" if oi_delta >= 0 else "#7948be", width=6, border_radius=1)])) 
 
-                groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=12, border_radius=2)]))
+                groups_velocity.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=vel_ratio, color="#0097a7", width=6, border_radius=1)]))
 
                 valid_ivs = [it['iv_skew'] for it in m['chart_data'] if it['iv_skew'] > 0]
                 max_iv_val = max(valid_ivs) if valid_ivs else 100.0
@@ -955,10 +951,9 @@ def main(page: ft.Page):
 
                 iv_bar_groups.append(ft.BarChartGroup(
                     x=item['index'],
-                    bar_rods=[ft.BarChartRod(from_y=floor_y, to_y=iv_val_item if iv_val_item > 0 else floor_y, color=ft.colors.ORANGE_700, width=12, border_radius=2)]
+                    bar_rods=[ft.BarChartRod(from_y=floor_y, to_y=iv_val_item if iv_val_item > 0 else floor_y, color=ft.colors.ORANGE_700, width=6, border_radius=1)]
                 ))
                 
-                # Axis labels printed at every $1,000 mark to keep the upgraded $500 window uncluttered
                 if strike_val % 1000 == 0:
                     label_color = ft.colors.BLUE_200 if is_spot else ft.colors.GREY_400
                     new_labels.append(ft.ChartAxisLabel(value=item['index'], label=ft.Text(f"{strike_val/1000:.0f}k", size=10, color=label_color, rotate=45, weight=ft.FontWeight.BOLD if is_spot else ft.FontWeight.NORMAL)))
@@ -1007,7 +1002,6 @@ def main(page: ft.Page):
             ui_row_item("Put Concentration (P2)", p2_txt)
         ]))),
 
-        # --- ORIENTED DIRECTIONALLY: CALLS ABOVE / PUTS BELOW ---
         create_section_header("NEAR-TERM OPTION WALLS BY OPEN INTEREST (<= 3D EXPIRY)"),
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
             walls_bar_chart,
