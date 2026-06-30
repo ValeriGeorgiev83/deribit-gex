@@ -19,8 +19,17 @@ REDIS_FLOW_KEY = "deribit_flow_24h_history"
 REDIS_OI_MIGRATION_KEY = "deribit_oi_hourly_history"
 MAX_HISTORY_POINTS = 3500
 
+COINALYZE_API_KEY = "890dc52e-cead-4fe9-8908-a5e1d14e0d50"
+
 # Keep track of the previous ATM IV to find live volatility direction velocity
 last_known_atm_iv = [50.0] 
+
+# Global memory dictionary to hand over coinalyze metrics safely to the dashboard main layout thread
+coinalyze_cache = {
+    "spot_5m": 0.0, "spot_15m": 0.0, "spot_1h": 0.0, "spot_4h": 0.0,
+    "perp_5m": 0.0, "perp_15m": 0.0, "perp_1h": 0.0, "perp_4h": 0.0,
+    "oi_5m": 0.0, "oi_15m": 0.0, "oi_1h": 0.0, "oi_4h": 0.0
+}
 
 def native_norm_pdf(x):
     """Pure mathematical replacement for scipy.stats.norm.pdf to prevent deployment crashes."""
@@ -67,6 +76,76 @@ def calculate_realized_vol_10d(currency="BTC"):
         return float(daily_std * math.sqrt(365) * 100.0)
     except Exception:
         return 50.0 
+
+def fetch_coinalyze_metrics():
+    """Queries Coinalyze REST endpoints, computes CVD movements and rolling OI changes safely."""
+    try:
+        headers = {"api_key": COINALYZE_API_KEY}
+        now_ts = int(time.time())
+        from_ts = now_ts - (5 * 3600) # Go back 5 hours to confidently get 48 bars of 5-minute frames
+
+        # 1. Fetch Spot and Futures Candlestick sets via OHLCV History
+        ohlcv_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT.A,BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
+        ohlcv_res = requests.get(ohlcv_url, headers=headers).json()
+        
+        # 2. Fetch Futures Open Interest snapshots over the same interval
+        oi_url = f"https://api.coinalyze.net/v1/open-interest-history?symbols=BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
+        oi_res = requests.get(oi_url, headers=headers).json()
+
+        spot_candles = []
+        perp_candles = []
+        oi_history = []
+
+        for item in ohlcv_res:
+            if item.get("symbol") == "BTCUSDT.A":
+                spot_candles = item.get("history", [])
+            elif item.get("symbol") == "BTCUSDT_PERP.A":
+                perp_candles = item.get("history", [])
+
+        for item in oi_res:
+            if item.get("symbol") == "BTCUSDT_PERP.A":
+                oi_history = item.get("history", [])
+
+        def compute_cvd_changes(candles):
+            """Calculates volume delta lists sequentially: buy_vol - sell_vol."""
+            deltas = []
+            for c in candles:
+                v = float(c.get("v", 0))
+                bv = float(c.get("bv", 0))
+                sv = v - bv
+                deltas.append(bv - sv)
+            return deltas
+
+        spot_deltas = compute_cvd_changes(spot_candles)
+        perp_deltas = compute_cvd_changes(perp_candles)
+        oi_closes = [float(o.get("c", 0)) for o in oi_history]
+
+        # Extract horizons (1 bar = 5m, 3 bars = 15m, 12 bars = 1h, 48 bars = 4h)
+        if spot_deltas:
+            coinalyze_cache["spot_5m"] = sum(spot_deltas[-1:])
+            coinalyze_cache["spot_15m"] = sum(spot_deltas[-3:])
+            coinalyze_cache["spot_1h"] = sum(spot_deltas[-12:])
+            coinalyze_cache["spot_4h"] = sum(spot_deltas[-48:])
+
+        if perp_deltas:
+            coinalyze_cache["perp_5m"] = sum(perp_deltas[-1:])
+            coinalyze_cache["perp_15m"] = sum(perp_deltas[-3:])
+            coinalyze_cache["perp_1h"] = sum(perp_deltas[-12:])
+            coinalyze_cache["perp_4h"] = sum(perp_deltas[-48:])
+
+        if len(oi_closes) >= 49:
+            coinalyze_cache["oi_5m"] = oi_closes[-1] - oi_closes[-2]
+            coinalyze_cache["oi_15m"] = oi_closes[-1] - oi_closes[-4]
+            coinalyze_cache["oi_1h"] = oi_closes[-1] - oi_closes[-13]
+            coinalyze_cache["oi_4h"] = oi_closes[-1] - oi_closes[-49]
+        elif len(oi_closes) >= 2:
+            coinalyze_cache["oi_5m"] = oi_closes[-1] - oi_closes[-2]
+            coinalyze_cache["oi_15m"] = oi_closes[-1] - oi_closes[max(-4, -len(oi_closes))]
+            coinalyze_cache["oi_1h"] = oi_closes[-1] - oi_closes[max(-13, -len(oi_closes))]
+            coinalyze_cache["oi_4h"] = oi_closes[-1] - oi_closes[0]
+
+    except Exception as ex:
+        print(f"Error compiling Coinalyze order flow fields: {ex}")
 
 def background_data_worker(currency="BTC"):
     """
@@ -239,6 +318,8 @@ def background_data_worker(currency="BTC"):
                 redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
                 redis.ltrim(REDIS_OI_MIGRATION_KEY, -168, -1)
 
+            # Concurrent call execution sync for external coinalyze pools
+            fetch_coinalyze_metrics()
             print("Background state sync complete.")
         except Exception as loop_ex:
             print(f"Background Loop Error encountered: {loop_ex}")
@@ -503,6 +584,23 @@ def format_horizon_text(value):
     action = "Expected to BUY" if value >= 0 else "Expected to SELL"
     return f"{action} {abs(value):,.2f} BTC"
 
+def format_table_cell(value, is_oi=False):
+    """Formats values inside the DataTable with dynamic color and arithmetic signs."""
+    if value == 0:
+        return ft.DataCell(ft.Text("0.0", color=ft.colors.GREY_400, size=13))
+    
+    sign = "+" if value > 0 else "-"
+    color = "#0cd56e" if value > 0 else "#e91841"
+    abs_val = abs(value)
+    
+    # Render OI or high volume thresholds compactly
+    if is_oi:
+        text_str = f"{sign}{abs_val:,.0f}"
+    else:
+        text_str = f"{sign}{abs_val:,.1f}" if abs_val < 1000 else f"{sign}{abs_val/1000:.1f}k"
+        
+    return ft.DataCell(ft.Text(text_str, color=color, weight=ft.FontWeight.W_600, size=13))
+
 def main(page: ft.Page):
     page.title = "DERIBIT GEX DASHBOARD"
     page.theme_mode = ft.ThemeMode.DARK
@@ -599,6 +697,17 @@ def main(page: ft.Page):
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240
     ) 
+
+    # --- DYNAMIC DATATABLE INTRADAY ANALYSIS WIDGET ---
+    coinalyze_data_table = ft.DataTable(
+        columns=[
+            ft.DataColumn(ft.Text("", size=13, weight=ft.FontWeight.BOLD)),
+            ft.DataColumn(ft.Text("Spot", size=13, weight=ft.FontWeight.BOLD, color=ft.colors.BLUE_200)),
+            ft.DataColumn(ft.Text("Perps", size=13, weight=ft.FontWeight.BOLD, color=ft.colors.PURPLE_200)),
+            ft.DataColumn(ft.Text("OI", size=13, weight=ft.FontWeight.BOLD, color=ft.colors.ORANGE_200)),
+        ],
+        rows=[]
+    )
 
     def create_section_header(title):
         return ft.Container(content=ft.Text(title, size=13, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_500), margin=ft.margin.only(top=15, bottom=5)) 
@@ -877,6 +986,14 @@ def main(page: ft.Page):
             id_skew_bar_chart.bar_groups = iv_bar_groups
             iv_bottom_axis.labels = list(new_labels)
             
+            # --- ASSEMBLE TABLE CELLS DYNAMICALLY FROM BACKGROUND CACHE POOL ---
+            coinalyze_data_table.rows = [
+                ft.DataRow(cells=[ft.DataCell(ft.Text("5M", weight=ft.FontWeight.BOLD, size=13)), format_table_cell(coinalyze_cache["spot_5m"]), format_table_cell(coinalyze_cache["perp_5m"]), format_table_cell(coinalyze_cache["oi_5m"], is_oi=True)]),
+                ft.DataRow(cells=[ft.DataCell(ft.Text("15M", weight=ft.FontWeight.BOLD, size=13)), format_table_cell(coinalyze_cache["spot_15m"]), format_table_cell(coinalyze_cache["perp_15m"]), format_table_cell(coinalyze_cache["oi_15m"], is_oi=True)]),
+                ft.DataRow(cells=[ft.DataCell(ft.Text("1H", weight=ft.FontWeight.BOLD, size=13)), format_table_cell(coinalyze_cache["spot_1h"]), format_table_cell(coinalyze_cache["perp_1h"]), format_table_cell(coinalyze_cache["oi_1h"], is_oi=True)]),
+                ft.DataRow(cells=[ft.DataCell(ft.Text("4H", weight=ft.FontWeight.BOLD, size=13)), format_table_cell(coinalyze_cache["spot_4h"]), format_table_cell(coinalyze_cache["perp_4h"]), format_table_cell(coinalyze_cache["oi_4h"], is_oi=True)]),
+            ]
+            
             page.update()
 
     page.add(
@@ -972,7 +1089,11 @@ def main(page: ft.Page):
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("24H Net Delta Flow Drift", ndf_drift_metric_txt),
             ui_row_item("Tape", ndf_structural_signal_txt)
-        ])))
+        ]))),
+
+        # --- NEW CARD TRACKING COINALYZE BINANCE DATA PROFILE ---
+        create_section_header("BINANCE BTCUSDT INTRADAY ORDER FLOW ENGINE"),
+        ft.Card(content=ft.Container(padding=10, content=coinalyze_data_table))
     )
     refresh_dashboard()
 
