@@ -84,8 +84,8 @@ def fetch_coinalyze_metrics():
         now_ts = int(time.time())
         from_ts = now_ts - (5 * 3600) # Go back 5 hours to confidently get 48 bars of 5-minute frames
 
-        # 1. Fetch Spot and Futures Candlestick sets via OHLCV History
-        ohlcv_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT.A,BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
+        # 1. Fetch Spot and Futures Candlestick sets via OHLCV History (Symbols cleaned for REST endpoints format)
+        ohlcv_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT.0,BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
         ohlcv_res = requests.get(ohlcv_url, headers=headers).json()
         
         # 2. Fetch Futures Open Interest snapshots over the same interval
@@ -96,15 +96,17 @@ def fetch_coinalyze_metrics():
         perp_candles = []
         oi_history = []
 
-        for item in ohlcv_res:
-            if item.get("symbol") == "BTCUSDT.A":
-                spot_candles = item.get("history", [])
-            elif item.get("symbol") == "BTCUSDT_PERP.A":
-                perp_candles = item.get("history", [])
+        if isinstance(ohlcv_res, list):
+            for item in ohlcv_res:
+                if item.get("symbol") == "BTCUSDT.0":
+                    spot_candles = item.get("history", [])
+                elif item.get("symbol") == "BTCUSDT_PERP.A":
+                    perp_candles = item.get("history", [])
 
-        for item in oi_res:
-            if item.get("symbol") == "BTCUSDT_PERP.A":
-                oi_history = item.get("history", [])
+        if isinstance(oi_res, list):
+            for item in oi_res:
+                if item.get("symbol") == "BTCUSDT_PERP.A":
+                    oi_history = item.get("history", [])
 
         def compute_cvd_changes(candles):
             """Calculates volume delta lists sequentially: buy_vol - sell_vol."""
@@ -593,7 +595,6 @@ def format_table_cell(value, is_oi=False):
     color = "#0cd56e" if value > 0 else "#e91841"
     abs_val = abs(value)
     
-    # Render OI or high volume thresholds compactly
     if is_oi:
         text_str = f"{sign}{abs_val:,.0f}"
     else:
@@ -698,7 +699,7 @@ def main(page: ft.Page):
         animate=True, interactive=True, height=240
     ) 
 
-    # --- DYNAMIC DATATABLE INTRADAY ANALYSIS WIDGET ---
+    # --- DATATABLE INTRADAY WIDGET ---
     coinalyze_data_table = ft.DataTable(
         columns=[
             ft.DataColumn(ft.Text("", size=13, weight=ft.FontWeight.BOLD)),
