@@ -438,6 +438,13 @@ def fetch_deribit_gex(currency="BTC"):
     df_chart_range_3d['strike_bucket'] = df_chart_range_3d['strike'].apply(lambda x: round(x / 500.0) * 500)
     bucket_data_3d = df_chart_range_3d.groupby('strike_bucket').agg({'gex': 'sum'}) 
 
+    # Extract short-dated (<3d) calls and puts breakdown metrics safely
+    df_calls_3d = df_3d_copy[(df_3d_copy['type'] == 'C') & (df_3d_copy['strike'] >= lower_bound) & (df_3d_copy['strike'] <= upper_bound)]
+    df_puts_3d = df_3d_copy[(df_3d_copy['type'] == 'P') & (df_3d_copy['strike'] >= lower_bound) & (df_3d_copy['strike'] <= upper_bound)]
+    
+    bucket_calls_3d = df_calls_3d.groupby('macro_bucket')['oi'].sum()
+    bucket_puts_3d = df_puts_3d.groupby('macro_bucket')['oi'].sum()
+
     df_chart_range_1m = base_df[base_df['days_to_expiry'] <= 30.0][(base_df['strike'] >= lower_bound) & (base_df['strike'] <= upper_bound)].copy()
     df_chart_range_1m['strike_bucket'] = df_chart_range_1m['strike'].apply(lambda x: round(x / 500.0) * 500)
     bucket_data_1m = df_chart_range_1m.groupby('strike_bucket').agg({'gex': 'sum', 'vanna': 'sum', 'volume': 'sum', 'oi': 'sum'}) 
@@ -454,11 +461,15 @@ def fetch_deribit_gex(currency="BTC"):
         gex_1m_val = bucket_data_1m['gex'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
         vanna_val = bucket_data_1m['vanna'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
         iv_skew_val = bucket_iv_map.get(b_strike, 0.0) 
+        
+        calls_oi_3d = bucket_calls_3d.get(b_strike, 0.0)
+        puts_oi_3d = bucket_puts_3d.get(b_strike, 0.0)
 
         chart_matrix.append({
             "index": idx, "strike": b_strike,
             "gex_3d": gex_3d_val, "gex_1m": gex_1m_val,
-            "vanna_exposure": vanna_val, "iv_skew": iv_skew_val
+            "vanna_exposure": vanna_val, "iv_skew": iv_skew_val,
+            "calls_oi_3d": calls_oi_3d, "puts_oi_3d": puts_oi_3d
         }) 
 
     realized_vol_10d_val = calculate_realized_vol_10d(currency) 
@@ -510,6 +521,8 @@ def main(page: ft.Page):
     page.padding = 14 
 
     net_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
+    calls_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
+    puts_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
     vanna_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
     oi_migration_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
@@ -576,6 +589,20 @@ def main(page: ft.Page):
     gex_bar_chart_3d = ft.BarChart(bar_groups=[], bottom_axis=net_axis_3d,
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240) 
+
+    # Implement short-dated Call Option chart logic configurations
+    calls_oi_chart_3d = ft.BarChart(
+        bar_groups=[], bottom_axis=calls_axis_3d,
+        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
+        animate=True, interactive=True, height=240, min_y=0, max_y=5000000.0
+    )
+
+    # Implement short-dated Put Option chart logic configurations
+    puts_oi_chart_3d = ft.BarChart(
+        bar_groups=[], bottom_axis=puts_axis_3d,
+        horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
+        animate=True, interactive=True, height=240, min_y=0, max_y=5000000.0
+    )
 
     gex_bar_chart_1m = ft.BarChart(
         bar_groups=[], bottom_axis=net_axis_1m,
@@ -797,6 +824,8 @@ def main(page: ft.Page):
             except Exception: pass 
 
             groups_net_3d = []
+            groups_calls_3d = []
+            groups_puts_3d = []
             groups_net_1m = []
             groups_vanna = []
             groups_oi_migration = []
@@ -836,8 +865,16 @@ def main(page: ft.Page):
                 val_1m = item['gex_1m']
                 v_exposure = item['vanna_exposure']
                 iv_val_item = item['iv_skew']
+                
+                c_oi_3d = item['calls_oi_3d']
+                p_oi_3d = item['puts_oi_3d']
 
                 groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color="#0cd56e" if val_3d >= 0 else "#e91841", width=6, border_radius=1)]))
+                
+                # Append structured short-term breakdown visuals
+                groups_calls_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=c_oi_3d, color="#0cd56e", width=6, border_radius=1)]))
+                groups_puts_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=p_oi_3d, color="#e91841", width=6, border_radius=1)]))
+                
                 groups_net_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_1m, color="#bab7ab" if val_1m >= 0 else "#1661b4", width=6, border_radius=1)]))
                 groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a" if v_exposure >= 0 else ft.colors.WHITE70, width=6, border_radius=1)])) 
 
@@ -864,6 +901,12 @@ def main(page: ft.Page):
             
             gex_bar_chart_3d.bar_groups = groups_net_3d
             net_axis_3d.labels = new_labels
+            
+            calls_oi_chart_3d.bar_groups = groups_calls_3d
+            calls_axis_3d.labels = list(new_labels)
+            
+            puts_oi_chart_3d.bar_groups = groups_puts_3d
+            puts_axis_3d.labels = list(new_labels)
 
             gex_bar_chart_1m.bar_groups = groups_net_1m
             net_axis_1m.labels = list(new_labels)
@@ -885,6 +928,14 @@ def main(page: ft.Page):
         
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (3D)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_3d)),
+
+        # NEW CARD 1: Short-term Call Option Matrix
+        create_section_header("SHORT-TERM CALL OPTIONS DISTRIBUTION (<= 3 DAYS / 5M MAX)"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=calls_oi_chart_3d)),
+
+        # NEW CARD 2: Short-term Put Option Matrix
+        create_section_header("SHORT-TERM PUT OPTIONS DISTRIBUTION (<= 3 DAYS / 5M MAX)"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=puts_oi_chart_3d)),
 
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
