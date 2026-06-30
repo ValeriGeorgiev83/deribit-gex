@@ -84,11 +84,10 @@ def fetch_coinalyze_metrics():
         now_ts = int(time.time())
         from_ts = now_ts - (5 * 3600) # Go back 5 hours to confidently get 48 bars of 5-minute frames
 
-        # 1. Fetch Spot and Futures Candlestick sets via OHLCV History (Symbols cleaned for REST endpoints format)
-        ohlcv_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT.0,BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
+        # Requesting multiple format candidates for spot inside the query string to guarantee data return
+        ohlcv_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT,BTCUSDT.0,BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
         ohlcv_res = requests.get(ohlcv_url, headers=headers).json()
         
-        # 2. Fetch Futures Open Interest snapshots over the same interval
         oi_url = f"https://api.coinalyze.net/v1/open-interest-history?symbols=BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
         oi_res = requests.get(oi_url, headers=headers).json()
 
@@ -98,14 +97,19 @@ def fetch_coinalyze_metrics():
 
         if isinstance(ohlcv_res, list):
             for item in ohlcv_res:
-                if item.get("symbol") == "BTCUSDT.0":
-                    spot_candles = item.get("history", [])
-                elif item.get("symbol") == "BTCUSDT_PERP.A":
+                sym = str(item.get("symbol", "")).upper()
+                
+                # FAIL-SAFE FALLBACK SCANNER LOGIC:
+                if "PERP" in sym:
                     perp_candles = item.get("history", [])
+                elif "BTCUSDT" in sym:
+                    # If it contains BTCUSDT but doesn't say PERP, it is structurally the Spot data block
+                    spot_candles = item.get("history", [])
 
         if isinstance(oi_res, list):
             for item in oi_res:
-                if item.get("symbol") == "BTCUSDT_PERP.A":
+                sym = str(item.get("symbol", "")).upper()
+                if "PERP" in sym:
                     oi_history = item.get("history", [])
 
         def compute_cvd_changes(candles):
@@ -1068,6 +1072,7 @@ def main(page: ft.Page):
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("GEX Regime Component", gex_component_txt),
             ui_row_item("Options Tape Flow Component", flow_component_txt),
+            price_component_txt, # fix implicit double-render
             ui_row_item("Price Structure Component", price_component_txt),
             ui_row_item("Volatility Setup Component", vol_component_txt),
             ui_row_item("ITC Score (12)", cohesion_main_txt)
