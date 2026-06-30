@@ -82,51 +82,50 @@ def fetch_coinalyze_metrics():
     try:
         headers = {"api_key": COINALYZE_API_KEY}
         now_ts = int(time.time())
-        from_ts = now_ts - (5 * 3600) # Go back 5 hours to confidently get 48 bars of 5-minute frames
+        from_ts = now_ts - (5 * 3600) 
 
-        # Requesting multiple format candidates for spot inside the query string to guarantee data return
-        ohlcv_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT,BTCUSDT.0,BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
-        ohlcv_res = requests.get(ohlcv_url, headers=headers).json()
-        
+        # We execute separate standalone requests to prevent combined parsing errors on Coinalyze servers
+        spot_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT&interval=5min&from={from_ts}&to={now_ts}"
+        perp_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
         oi_url = f"https://api.coinalyze.net/v1/open-interest-history?symbols=BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
+        
+        spot_res = requests.get(spot_url, headers=headers).json()
+        perp_res = requests.get(perp_url, headers=headers).json()
         oi_res = requests.get(oi_url, headers=headers).json()
 
         spot_candles = []
         perp_candles = []
         oi_history = []
 
-        if isinstance(ohlcv_res, list):
-            for item in ohlcv_res:
-                sym = str(item.get("symbol", "")).upper()
-                
-                # FAIL-SAFE FALLBACK SCANNER LOGIC:
-                if "PERP" in sym:
-                    perp_candles = item.get("history", [])
-                elif "BTCUSDT" in sym:
-                    # If it contains BTCUSDT but doesn't say PERP, it is structurally the Spot data block
-                    spot_candles = item.get("history", [])
+        if isinstance(spot_res, list) and len(spot_res) > 0:
+            spot_candles = spot_res[0].get("history", [])
+        if isinstance(perp_res, list) and len(perp_res) > 0:
+            perp_candles = perp_res[0].get("history", [])
+        if isinstance(oi_res, list) and len(oi_res) > 0:
+            oi_history = oi_res[0].get("history", [])
 
-        if isinstance(oi_res, list):
-            for item in oi_res:
-                sym = str(item.get("symbol", "")).upper()
-                if "PERP" in sym:
-                    oi_history = item.get("history", [])
-
-        def compute_cvd_changes(candles):
-            """Calculates volume delta lists sequentially: buy_vol - sell_vol."""
+        def compute_cvd_changes(candles, is_spot_asset=False):
             deltas = []
             for c in candles:
                 v = float(c.get("v", 0))
-                bv = float(c.get("bv", 0))
+                # Fallback calculation if buy volume field is omitted by spot schema
+                if "bv" in c:
+                    bv = float(c.get("bv", 0))
+                else:
+                    # Treat candle close position inside the candle body as volume delta ratio proxy
+                    o_p = float(c.get("o", 1))
+                    c_p = float(c.get("c", 1))
+                    ratio = 0.5 if o_p == c_p else (0.5 + ((c_p - o_p) / max(0.001, float(c.get("h", 1)) - float(c.get("l", 1))) * 0.5))
+                    bv = v * max(0.0, min(1.0, ratio))
+                
                 sv = v - bv
                 deltas.append(bv - sv)
             return deltas
 
-        spot_deltas = compute_cvd_changes(spot_candles)
-        perp_deltas = compute_cvd_changes(perp_candles)
+        spot_deltas = compute_cvd_changes(spot_candles, is_spot_asset=True)
+        perp_deltas = compute_cvd_changes(perp_candles, is_spot_asset=False)
         oi_closes = [float(o.get("c", 0)) for o in oi_history]
 
-        # Extract horizons (1 bar = 5m, 3 bars = 15m, 12 bars = 1h, 48 bars = 4h)
         if spot_deltas:
             coinalyze_cache["spot_5m"] = sum(spot_deltas[-1:])
             coinalyze_cache["spot_15m"] = sum(spot_deltas[-3:])
@@ -157,12 +156,10 @@ def background_data_worker(currency="BTC"):
     """
     Independent data collection engine running in a separate thread.
     Saves inflows, metrics, and migrations to Upstash automatically every 5 minutes.
-    Tracks state using previous execution's last trade ID to slice overlapping transactions.
     """
     print("Background Upstash Processing Worker Loop Engaged.")
     while True:
         try:
-            print(f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}] Processing backend metrics write...")
             idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
             idx_res = requests.get(idx_url).json()
             spot_price = float(idx_res['result']['index_price']) 
@@ -324,7 +321,6 @@ def background_data_worker(currency="BTC"):
                 redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
                 redis.ltrim(REDIS_OI_MIGRATION_KEY, -168, -1)
 
-            # Concurrent call execution sync for external coinalyze pools
             fetch_coinalyze_metrics()
             print("Background state sync complete.")
         except Exception as loop_ex:
@@ -1072,7 +1068,6 @@ def main(page: ft.Page):
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("GEX Regime Component", gex_component_txt),
             ui_row_item("Options Tape Flow Component", flow_component_txt),
-            price_component_txt, # fix implicit double-render
             ui_row_item("Price Structure Component", price_component_txt),
             ui_row_item("Volatility Setup Component", vol_component_txt),
             ui_row_item("ITC Score (12)", cohesion_main_txt)
