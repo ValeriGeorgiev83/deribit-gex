@@ -84,14 +84,23 @@ def fetch_coinalyze_metrics():
         now_ts = int(time.time())
         from_ts = now_ts - (5 * 3600) 
 
-        # Broad symbol selection profile arrays mapped concurrently
-        spot_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT,BTCUSDT.0,A:BTCUSDT&interval=5min&from={from_ts}&to={now_ts}"
-        perp_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
-        oi_url = f"https://api.coinalyze.net/v1/open-interest-history?symbols=BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
+        # Cleaned explicit symbol selections using verified exchange prefix filters
+        spot_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=A:BTCUSDT&interval=5min&from={from_ts}&to={now_ts}"
+        perp_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=A:BTCUSDT_PERP&interval=5min&from={from_ts}&to={now_ts}"
+        oi_url = f"https://api.coinalyze.net/v1/open-interest-history?symbols=A:BTCUSDT_PERP&interval=5min&from={from_ts}&to={now_ts}"
         
-        spot_res = requests.get(spot_url, headers=headers).json()
-        perp_res = requests.get(perp_url, headers=headers).json()
-        oi_res = requests.get(oi_url, headers=headers).json()
+        spot_req = requests.get(spot_url, headers=headers)
+        perp_req = requests.get(perp_url, headers=headers)
+        oi_req = requests.get(oi_url, headers=headers)
+
+        # Print detailed engine payloads directly into Render console to monitor API lifecycle health
+        print(f"[COINALYZE DEBUG] Spot HTTP Status: {spot_req.status_code}, Payload Snippet: {spot_req.text[:160]}")
+        print(f"[COINALYZE DEBUG] Perp HTTP Status: {perp_req.status_code}, Payload Snippet: {perp_req.text[:160]}")
+        print(f"[COINALYZE DEBUG] OI HTTP Status: {oi_req.status_code}, Payload Snippet: {oi_req.text[:160]}")
+
+        spot_res = spot_req.json()
+        perp_res = perp_req.json()
+        oi_res = oi_req.json()
 
         spot_candles = []
         perp_candles = []
@@ -123,7 +132,6 @@ def fetch_coinalyze_metrics():
             for c in candles:
                 v = float(c.get("v", 0))
                 
-                # Check for physical spot proxy parameters or corrupted empty string value metrics
                 if is_spot_asset or "bv" not in c or c.get("bv") is None or float(c.get("bv", 0)) == 0:
                     o_p = float(c.get("o", 1))
                     c_p = float(c.get("c", 1))
@@ -329,7 +337,6 @@ def background_data_worker(currency="BTC"):
                     oi_snapshot_map = base_df.groupby('strike_bucket')['oi'].sum().to_dict()
                     oi_snapshot_map = {str(k): float(v) for k, v in oi_snapshot_map.items()} 
 
-                # SQUASHED SYNTAX ERROR: Properly formatted dictionary map literals
                 oi_history_snapshot = {"timestamp": hourly_time_tag, "oi_distribution": oi_snapshot_map}
                 redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
                 redis.ltrim(REDIS_OI_MIGRATION_KEY, -168, -1)
