@@ -84,7 +84,7 @@ def fetch_coinalyze_metrics():
         now_ts = int(time.time())
         from_ts = now_ts - (5 * 3600) 
 
-        # Unified broad asset tracking candidate string to maximize server cache alignment
+        # Broad symbol selection profile arrays mapped concurrently
         spot_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT,BTCUSDT.0,A:BTCUSDT&interval=5min&from={from_ts}&to={now_ts}"
         perp_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
         oi_url = f"https://api.coinalyze.net/v1/open-interest-history?symbols=BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
@@ -97,13 +97,12 @@ def fetch_coinalyze_metrics():
         perp_candles = []
         oi_history = []
 
-        # FIXED SCANNERS: Loop over elements to prevent index displacement mismatch bugs
         if isinstance(spot_res, list):
             for entry in spot_res:
                 hist = entry.get("history", [])
                 if hist:
                     spot_candles = hist
-                    break # Secure the first valid populated array variant found
+                    break 
 
         if isinstance(perp_res, list):
             for entry in perp_res:
@@ -123,15 +122,17 @@ def fetch_coinalyze_metrics():
             deltas = []
             for c in candles:
                 v = float(c.get("v", 0))
-                if "bv" in c and float(c.get("bv", 0)) > 0:
-                    bv = float(c.get("bv", 0))
-                else:
+                
+                # FIXED TYPO RULE: Force mathematical ratio proxy estimation explicitly for spot profiles
+                if is_spot_asset or "bv" not in c or c.get("bv") is None or float(c.get("bv", 0)) == 0:
                     o_p = float(c.get("o", 1))
                     c_p = float(c.get("c", 1))
                     h_p = float(c.get("h", 1))
                     l_p = float(c.get("l", 1))
                     ratio = 0.5 if o_p == c_p else (0.5 + ((c_p - o_p) / max(0.001, h_p - l_p) * 0.5))
                     bv = v * max(0.0, min(1.0, ratio))
+                else:
+                    bv = float(c.get("bv", 0))
                 
                 sv = v - bv
                 deltas.append(bv - sv)
@@ -328,7 +329,7 @@ def background_data_worker(currency="BTC"):
                     oi_snapshot_map = base_df.groupby('strike_bucket')['oi'].sum().to_dict()
                     oi_snapshot_map = {str(k): float(v) for k, v in oi_snapshot_map.items()} 
 
-                oi_history_snapshot = {"timestamp": hourly_time_tag, "oi_distribution": oi_snapshot_map}
+                oi_history_snapshot = {"timestamp": hourly_time_tag, "oi_distribution", oi_snapshot_map}
                 redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
                 redis.ltrim(REDIS_OI_MIGRATION_KEY, -168, -1)
 
