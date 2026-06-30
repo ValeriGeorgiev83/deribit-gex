@@ -84,8 +84,8 @@ def fetch_coinalyze_metrics():
         now_ts = int(time.time())
         from_ts = now_ts - (5 * 3600) 
 
-        # We execute separate standalone requests to prevent combined parsing errors on Coinalyze servers
-        spot_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT&interval=5min&from={from_ts}&to={now_ts}"
+        # Unified structural explicit symbol tracking format for backend server architecture queries
+        spot_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=A:BTCUSDT,A:BTCUSDT.4&interval=5min&from={from_ts}&to={now_ts}"
         perp_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
         oi_url = f"https://api.coinalyze.net/v1/open-interest-history?symbols=BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
         
@@ -108,14 +108,15 @@ def fetch_coinalyze_metrics():
             deltas = []
             for c in candles:
                 v = float(c.get("v", 0))
-                # Fallback calculation if buy volume field is omitted by spot schema
-                if "bv" in c:
+                if "bv" in c and float(c.get("bv", 0)) > 0:
                     bv = float(c.get("bv", 0))
                 else:
-                    # Treat candle close position inside the candle body as volume delta ratio proxy
+                    # Robust close positioning mathematical ratio calculation asset processing loop
                     o_p = float(c.get("o", 1))
                     c_p = float(c.get("c", 1))
-                    ratio = 0.5 if o_p == c_p else (0.5 + ((c_p - o_p) / max(0.001, float(c.get("h", 1)) - float(c.get("l", 1))) * 0.5))
+                    h_p = float(c.get("h", 1))
+                    l_p = float(c.get("l", 1))
+                    ratio = 0.5 if o_p == c_p else (0.5 + ((c_p - o_p) / max(0.001, h_p - l_p) * 0.5))
                     bv = v * max(0.0, min(1.0, ratio))
                 
                 sv = v - bv
@@ -153,10 +154,7 @@ def fetch_coinalyze_metrics():
         print(f"Error compiling Coinalyze order flow fields: {ex}")
 
 def background_data_worker(currency="BTC"):
-    """
-    Independent data collection engine running in a separate thread.
-    Saves inflows, metrics, and migrations to Upstash automatically every 5 minutes.
-    """
+    """Independent data collection engine running in a separate thread."""
     print("Background Upstash Processing Worker Loop Engaged.")
     while True:
         try:
@@ -219,7 +217,6 @@ def background_data_worker(currency="BTC"):
                 print(f"Error fetching last process state: {e}")
 
             incoming_ids = [str(t.get('trade_id', '')) for t in trades_list]
-            
             slice_index = None
             if last_processed_id and last_processed_id in incoming_ids:
                 slice_index = incoming_ids.index(last_processed_id)
