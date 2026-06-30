@@ -590,18 +590,17 @@ def main(page: ft.Page):
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240) 
 
-    # Implement short-dated Call Option chart logic configurations
+    # Dynamic scaling configs (starting bounds initialization pool)
     calls_oi_chart_3d = ft.BarChart(
         bar_groups=[], bottom_axis=calls_axis_3d,
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
-        animate=True, interactive=True, height=240, min_y=0, max_y=5000000.0
+        animate=True, interactive=True, height=240, min_y=0
     )
 
-    # Implement short-dated Put Option chart logic configurations
     puts_oi_chart_3d = ft.BarChart(
         bar_groups=[], bottom_axis=puts_axis_3d,
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
-        animate=True, interactive=True, height=240, min_y=0, max_y=5000000.0
+        animate=True, interactive=True, height=240, min_y=0
     )
 
     gex_bar_chart_1m = ft.BarChart(
@@ -843,12 +842,24 @@ def main(page: ft.Page):
 
             max_abs_vanna_exposure = 0.0001
             max_abs_oi_delta = 0.0001 
+            
+            # TRACK MAX VALUE DYNAMICALLY FOR THE PAIR
+            max_short_term_oi_in_view = 0.0001
 
             for item in m['chart_data']:
                 if abs(item['vanna_exposure']) > max_abs_vanna_exposure: max_abs_vanna_exposure = abs(item['vanna_exposure']) 
                 stk = item['strike']
                 oi_change = historical_oi_deltas.get(stk, 0.0)
                 if abs(oi_change) > max_abs_oi_delta: max_abs_oi_delta = abs(oi_change) 
+                
+                # Fetch maximum peaks for custom breakdown metrics context fields
+                if item['calls_oi_3d'] > max_short_term_oi_in_view: max_short_term_oi_in_view = item['calls_oi_3d']
+                if item['puts_oi_3d'] > max_short_term_oi_in_view: max_short_term_oi_in_view = item['puts_oi_3d']
+
+            # DYNAMIC SCALE ALIGNMENT WITH 15% PADDING CUSHION FOR READABILITY
+            aligned_oi_bound = max_short_term_oi_in_view * 1.15
+            calls_oi_chart_3d.max_y = aligned_oi_bound
+            puts_oi_chart_3d.max_y = aligned_oi_bound
 
             vanna_exposure_bound = max_abs_vanna_exposure * 1.15
             vanna_bar_chart.min_y = -vanna_exposure_bound
@@ -871,7 +882,7 @@ def main(page: ft.Page):
 
                 groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color="#0cd56e" if val_3d >= 0 else "#e91841", width=6, border_radius=1)]))
                 
-                # Append structured short-term breakdown visuals
+                # Dynamic heights render cleanly contextually matched on real-time ceiling limits
                 groups_calls_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=c_oi_3d, color="#0cd56e", width=6, border_radius=1)]))
                 groups_puts_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=p_oi_3d, color="#e91841", width=6, border_radius=1)]))
                 
@@ -929,12 +940,12 @@ def main(page: ft.Page):
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (3D)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_3d)),
 
-        # NEW CARD 1: Short-term Call Option Matrix
-        create_section_header("SHORT-TERM CALL OPTIONS DISTRIBUTION (<= 3 DAYS / 5M MAX)"),
+        # DYNAMIC COMPARATIVE CELL 1
+        create_section_header("SHORT-TERM CALL OPTIONS DISTRIBUTION (<= 3 DAYS / ALIGNED SCALE)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=calls_oi_chart_3d)),
 
-        # NEW CARD 2: Short-term Put Option Matrix
-        create_section_header("SHORT-TERM PUT OPTIONS DISTRIBUTION (<= 3 DAYS / 5M MAX)"),
+        # DYNAMIC COMPARATIVE CELL 2
+        create_section_header("SHORT-TERM PUT OPTIONS DISTRIBUTION (<= 3 DAYS / ALIGNED SCALE)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=puts_oi_chart_3d)),
 
         create_section_header("IMPORTANT LEVELS"),
