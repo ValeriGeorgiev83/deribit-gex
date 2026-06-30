@@ -123,7 +123,7 @@ def fetch_coinalyze_metrics():
             for c in candles:
                 v = float(c.get("v", 0))
                 
-                # FIXED TYPO RULE: Force mathematical ratio proxy estimation explicitly for spot profiles
+                # Check for physical spot proxy parameters or corrupted empty string value metrics
                 if is_spot_asset or "bv" not in c or c.get("bv") is None or float(c.get("bv", 0)) == 0:
                     o_p = float(c.get("o", 1))
                     c_p = float(c.get("c", 1))
@@ -329,7 +329,8 @@ def background_data_worker(currency="BTC"):
                     oi_snapshot_map = base_df.groupby('strike_bucket')['oi'].sum().to_dict()
                     oi_snapshot_map = {str(k): float(v) for k, v in oi_snapshot_map.items()} 
 
-                oi_history_snapshot = {"timestamp": hourly_time_tag, "oi_distribution", oi_snapshot_map}
+                # SQUASHED SYNTAX ERROR: Properly formatted dictionary map literals
+                oi_history_snapshot = {"timestamp": hourly_time_tag, "oi_distribution": oi_snapshot_map}
                 redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
                 redis.ltrim(REDIS_OI_MIGRATION_KEY, -168, -1)
 
