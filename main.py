@@ -84,8 +84,8 @@ def fetch_coinalyze_metrics():
         now_ts = int(time.time())
         from_ts = now_ts - (5 * 3600) 
 
-        # Unified structural explicit symbol tracking format for backend server architecture queries
-        spot_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=A:BTCUSDT,A:BTCUSDT.4&interval=5min&from={from_ts}&to={now_ts}"
+        # Unified broad asset tracking candidate string to maximize server cache alignment
+        spot_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT,BTCUSDT.0,A:BTCUSDT&interval=5min&from={from_ts}&to={now_ts}"
         perp_url = f"https://api.coinalyze.net/v1/ohlcv-history?symbols=BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
         oi_url = f"https://api.coinalyze.net/v1/open-interest-history?symbols=BTCUSDT_PERP.A&interval=5min&from={from_ts}&to={now_ts}"
         
@@ -97,12 +97,27 @@ def fetch_coinalyze_metrics():
         perp_candles = []
         oi_history = []
 
-        if isinstance(spot_res, list) and len(spot_res) > 0:
-            spot_candles = spot_res[0].get("history", [])
-        if isinstance(perp_res, list) and len(perp_res) > 0:
-            perp_candles = perp_res[0].get("history", [])
-        if isinstance(oi_res, list) and len(oi_res) > 0:
-            oi_history = oi_res[0].get("history", [])
+        # FIXED SCANNERS: Loop over elements to prevent index displacement mismatch bugs
+        if isinstance(spot_res, list):
+            for entry in spot_res:
+                hist = entry.get("history", [])
+                if hist:
+                    spot_candles = hist
+                    break # Secure the first valid populated array variant found
+
+        if isinstance(perp_res, list):
+            for entry in perp_res:
+                hist = entry.get("history", [])
+                if hist:
+                    perp_candles = hist
+                    break
+
+        if isinstance(oi_res, list):
+            for entry in oi_res:
+                hist = entry.get("history", [])
+                if hist:
+                    oi_history = hist
+                    break
 
         def compute_cvd_changes(candles, is_spot_asset=False):
             deltas = []
@@ -111,7 +126,6 @@ def fetch_coinalyze_metrics():
                 if "bv" in c and float(c.get("bv", 0)) > 0:
                     bv = float(c.get("bv", 0))
                 else:
-                    # Robust close positioning mathematical ratio calculation asset processing loop
                     o_p = float(c.get("o", 1))
                     c_p = float(c.get("c", 1))
                     h_p = float(c.get("h", 1))
