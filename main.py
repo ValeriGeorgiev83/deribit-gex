@@ -72,12 +72,10 @@ def background_data_worker(currency="BTC"):
     """
     Independent data collection engine running in a separate thread.
     Saves inflows, metrics, and migrations to Upstash automatically every 5 minutes.
-    Tracks state using previous execution's last trade ID to slice overlapping transactions.
     """
     print("Background Upstash Processing Worker Loop Engaged.")
     while True:
         try:
-            print(f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}] Processing backend metrics write...")
             idx_url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={currency.lower()}_usd"
             idx_res = requests.get(idx_url).json()
             spot_price = float(idx_res['result']['index_price']) 
@@ -378,9 +376,13 @@ def fetch_deribit_gex(currency="BTC"):
     if not df_7d.empty:
         calls_7d = df_7d[df_7d['type'] == 'C']
         puts_7d = df_7d[df_7d['type'] == 'P']
-        c_25d = calls_7d.loc[(calls_7d['strike'] - spot_price * 1.05).abs().idxmin()] if not calls_7d.empty else None
-        p_25d = puts_7d.loc[(puts_7d['strike'] - spot_price * 0.95).abs().idxmin()] if not puts_7d.empty else None
-        if c_25d is not None and p_25d is not None: skew_25d_val = p_25d['iv'] - c_25d['iv'] 
+        
+        # FIXED: More resilient fallback alignment if absolute 5% distance contains empty sets
+        c_idx = (calls_7d['strike'] - spot_price * 1.05).abs().idxmin() if not calls_7d.empty else None
+        p_idx = (puts_7d['strike'] - spot_price * 0.95).abs().idxmin() if not puts_7d.empty else None
+        
+        if c_idx is not None and p_idx is not None:
+            skew_25d_val = float(puts_7d.loc[p_idx, 'iv'] - calls_7d.loc[c_idx, 'iv'])
 
     strikes_3d = sorted(df_3d['strike'].unique())
     min_pain = float('inf')
@@ -438,7 +440,6 @@ def fetch_deribit_gex(currency="BTC"):
     df_chart_range_3d['strike_bucket'] = df_chart_range_3d['strike'].apply(lambda x: round(x / 500.0) * 500)
     bucket_data_3d = df_chart_range_3d.groupby('strike_bucket').agg({'gex': 'sum'}) 
 
-    # Extract short-dated (<3d) calls and puts breakdown metrics safely
     df_calls_3d = df_3d_copy[(df_3d_copy['type'] == 'C') & (df_3d_copy['strike'] >= lower_bound) & (df_3d_copy['strike'] <= upper_bound)]
     df_puts_3d = df_3d_copy[(df_3d_copy['type'] == 'P') & (df_3d_copy['strike'] >= lower_bound) & (df_3d_copy['strike'] <= upper_bound)]
     
@@ -489,7 +490,8 @@ def fetch_deribit_gex(currency="BTC"):
         "max_pain": max_pain_level, "flip": flip_level, "breakout": breakout_price,
         "resistance": resistance_level, "support": support_level, "call_inflow": total_accumulated_call_flow,
         "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "chart_data": chart_matrix,
-        "skew_25d": 0.0, "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level,
+        "skew_25d": skew_25d_val, # FIXED: passing actual parsed float variable name
+        "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level,
         "implied_vol": atm_iv, "realized_vol": realized_vol_10d_val,
         "trend_score": total_cohesion_points, "pt_gex": pt_gex, "pt_flow": pt_flow, "pt_price": pt_price, "pt_vol": pt_vol,
         "net_charm_flow": hourly_charm_rehedge_contracts,
@@ -590,7 +592,6 @@ def main(page: ft.Page):
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240) 
 
-    # Dynamic scaling configs (starting bounds initialization pool)
     calls_oi_chart_3d = ft.BarChart(
         bar_groups=[], bottom_axis=calls_axis_3d,
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
@@ -680,6 +681,18 @@ def main(page: ft.Page):
             breakout_txt.value = f"${m['breakout']:,.0f}"
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}" 
+
+            # FIXED: Updating the 25D Skew UI layout element dynamically
+            sk_val = m['skew_25d'] * 100.0
+            if sk_val > 0.5:
+                skew_25d_txt.value = f"{sk_val:+.2f}% (Put Premium / Bearish Bias)"
+                skew_25d_txt.color = ft.colors.RED_400
+            elif sk_val < -0.5:
+                skew_25d_txt.value = f"{sk_val:+.2f}% (Call Premium / Bullish Bias)"
+                skew_25d_txt.color = ft.colors.GREEN_400
+            else:
+                skew_25d_txt.value = f"{sk_val:+.2f}% (Flat Vol Symmetrical)"
+                skew_25d_txt.color = ft.colors.GREY_400
 
             c_flow, p_flow, net_bias = m['call_inflow'], m['put_inflow'], m['net_flow']
             inflows_call_txt.value = fmt_signed_flow(c_flow)
@@ -842,8 +855,6 @@ def main(page: ft.Page):
 
             max_abs_vanna_exposure = 0.0001
             max_abs_oi_delta = 0.0001 
-            
-            # TRACK MAX VALUE DYNAMICALLY FOR THE PAIR
             max_short_term_oi_in_view = 0.0001
 
             for item in m['chart_data']:
@@ -852,11 +863,9 @@ def main(page: ft.Page):
                 oi_change = historical_oi_deltas.get(stk, 0.0)
                 if abs(oi_change) > max_abs_oi_delta: max_abs_oi_delta = abs(oi_change) 
                 
-                # Fetch maximum peaks for custom breakdown metrics context fields
                 if item['calls_oi_3d'] > max_short_term_oi_in_view: max_short_term_oi_in_view = item['calls_oi_3d']
                 if item['puts_oi_3d'] > max_short_term_oi_in_view: max_short_term_oi_in_view = item['puts_oi_3d']
 
-            # DYNAMIC SCALE ALIGNMENT WITH 15% PADDING CUSHION FOR READABILITY
             aligned_oi_bound = max_short_term_oi_in_view * 1.15
             calls_oi_chart_3d.max_y = aligned_oi_bound
             puts_oi_chart_3d.max_y = aligned_oi_bound
@@ -881,11 +890,8 @@ def main(page: ft.Page):
                 p_oi_3d = item['puts_oi_3d']
 
                 groups_net_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_3d, color="#0cd56e" if val_3d >= 0 else "#e91841", width=6, border_radius=1)]))
-                
-                # Dynamic heights render cleanly contextually matched on real-time ceiling limits
                 groups_calls_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=c_oi_3d, color="#0cd56e", width=6, border_radius=1)]))
                 groups_puts_3d.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=p_oi_3d, color="#e91841", width=6, border_radius=1)]))
-                
                 groups_net_1m.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=val_1m, color="#bab7ab" if val_1m >= 0 else "#1661b4", width=6, border_radius=1)]))
                 groups_vanna.append(ft.BarChartGroup(x=item['index'], bar_rods=[ft.BarChartRod(from_y=0, to_y=v_exposure, color="#d26e5a" if v_exposure >= 0 else ft.colors.WHITE70, width=6, border_radius=1)])) 
 
@@ -912,22 +918,16 @@ def main(page: ft.Page):
             
             gex_bar_chart_3d.bar_groups = groups_net_3d
             net_axis_3d.labels = new_labels
-            
             calls_oi_chart_3d.bar_groups = groups_calls_3d
             calls_axis_3d.labels = list(new_labels)
-            
             puts_oi_chart_3d.bar_groups = groups_puts_3d
             puts_axis_3d.labels = list(new_labels)
-
             gex_bar_chart_1m.bar_groups = groups_net_1m
             net_axis_1m.labels = list(new_labels)
-            
             vanna_bar_chart.bar_groups = groups_vanna
             vanna_bottom_axis.labels = list(new_labels)
-
             oi_migration_bar_chart.bar_groups = groups_oi_migration
             oi_migration_bottom_axis.labels = list(new_labels)
-
             id_skew_bar_chart.bar_groups = iv_bar_groups
             iv_bottom_axis.labels = list(new_labels)
             
@@ -940,11 +940,9 @@ def main(page: ft.Page):
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (3D)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_3d)),
 
-        # RENAMED CARD 1
         create_section_header("CALL OPTIONS DISTRIBUTION (3D)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=calls_oi_chart_3d)),
 
-        # RENAMED CARD 2
         create_section_header("PUT OPTIONS DISTRIBUTION (3D)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=puts_oi_chart_3d)),
 
