@@ -455,6 +455,25 @@ def fetch_deribit_gex(currency="BTC"):
             "calls_oi_3d": calls_oi_3d, "puts_oi_3d": puts_oi_3d
         }) 
 
+    # DYNAMIC LOGIC POOL FOR EXPLORATION PROFILE MATRIX ENGINE
+    total_oi_global = base_df['oi'].sum() if not base_df.empty else 1.0
+    
+    def calculate_expiry_slice_metrics(df, min_d, max_d):
+        slice_df = df[(df['days_to_expiry'] >= min_d) & (df['days_to_expiry'] <= max_d)]
+        if slice_df.empty:
+            return 0.0, 1.0
+        share = (slice_df['oi'].sum() / total_oi_global) * 100.0
+        c_oi = slice_df[slice_df['type'] == 'C']['oi'].sum()
+        p_oi = slice_df[slice_df['type'] == 'P']['oi'].sum()
+        ratio = (c_oi / p_oi) if p_oi > 0 else (c_oi if c_oi > 0 else 1.0)
+        return share, ratio
+
+    s_0d, r_0d = calculate_expiry_slice_metrics(base_df, 0.0, 0.25) # Standard 0DTE slice threshold
+    s_1d, r_1d = calculate_expiry_slice_metrics(base_df, 0.25, 1.1)
+    s_3d, r_3d = calculate_expiry_slice_metrics(base_df, 1.1, 3.1)
+    s_1w, r_1w = calculate_expiry_slice_metrics(base_df, 3.1, 7.1)
+    s_1m, r_1m = calculate_expiry_slice_metrics(base_df, 7.1, 31.0)
+
     realized_vol_10d_val = calculate_realized_vol_10d(currency) 
     return {
         "spot": spot_price,
@@ -471,7 +490,10 @@ def fetch_deribit_gex(currency="BTC"):
         "aggr_put_ask": total_p_ask, "aggr_put_bid": total_p_bid,
         "speed_current": net_speed_current, "speed_down_1000": net_speed_down_1000, "speed_up_1000": net_speed_up_1000,
         "iv_direction": "EXPANDING" if iv_shift_multiplier > 0 else "CRUSHING",
-        "raw_option_dataframe": bucket_data_1m
+        "raw_option_dataframe": bucket_data_1m,
+        "expiry_profile": {
+            "0d": (s_0d, r_0d), "1d": (s_1d, r_1d), "3d": (s_3d, r_3d), "1w": (s_1w, r_1w), "1m": (s_1m, r_1m)
+        }
     } 
 
 def fmt_gex(val):
@@ -517,6 +539,18 @@ def main(page: ft.Page):
     breakout_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.GREEN_ACCENT) 
     res_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_300)
     sup_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.PINK_400) 
+
+    # EXPIRE ANALYSIS TEXT INSTANCES POOL
+    p0_share = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
+    p0_ratio = ft.Text("1.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_GREY_300)
+    p1_share = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
+    p1_ratio = ft.Text("1.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_GREY_300)
+    p3_share = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
+    p3_ratio = ft.Text("1.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_GREY_300)
+    pw_share = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
+    pw_ratio = ft.Text("1.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_GREY_300)
+    pm_share = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
+    pm_ratio = ft.Text("1.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_GREY_300)
 
     inflows_call_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
     outflows_put_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
@@ -635,6 +669,19 @@ def main(page: ft.Page):
             breakout_txt.value = f"${m['breakout']:,.0f}"
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}" 
+
+            # EXPIRY MATRIX WRITE BACK INTERPOLATION
+            ep = m['expiry_profile']
+            p0_share.value = f"{ep['0d'][0]:.2f}%"
+            p0_ratio.value = f"{ep['0d'][1]:.2f}"
+            p1_share.value = f"{ep['1d'][0]:.2f}%"
+            p1_ratio.value = f"{ep['1d'][1]:.2f}"
+            p3_share.value = f"{ep['3d'][0]:.2f}%"
+            p3_ratio.value = f"{ep['3d'][1]:.2f}"
+            pw_share.value = f"{ep['1w'][0]:.2f}%"
+            pw_ratio.value = f"{ep['1w'][1]:.2f}"
+            pm_share.value = f"{ep['1m'][0]:.2f}%"
+            pm_ratio.value = f"{ep['1m'][1]:.2f}"
 
             sk_val = m['skew_25d']
             if sk_val > 0.5:
@@ -840,6 +887,23 @@ def main(page: ft.Page):
 
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
+
+        # NEW RESTRUCTURED: EXPIRATION TIMELINE COMPOSITION MATRIX
+        create_section_header("OPTIONS EXPIRATION TIME HORIZON ANALYSIS"),
+        ft.Card(content=ft.Container(padding=14, content=ft.DataTable(
+            columns=[
+                ft.DataColumn(ft.Text("", size=13, color=ft.colors.GREY_400)),
+                ft.DataColumn(ft.Text("Share", size=13, color=ft.colors.GREY_400)),
+                ft.DataColumn(ft.Text("C/P", size=13, color=ft.colors.GREY_400)),
+            ],
+            rows=[
+                ft.DataRow(cells=[ft.DataCell(ft.Text("0DTE", weight=ft.FontWeight.BOLD)), ft.DataCell(p0_share), ft.DataCell(p0_ratio)]),
+                ft.DataRow(cells=[ft.DataCell(ft.Text("1DTE", weight=ft.FontWeight.BOLD)), ft.DataCell(p1_share), ft.DataCell(p1_ratio)]),
+                ft.DataRow(cells=[ft.DataCell(ft.Text("3DTE", weight=ft.FontWeight.BOLD)), ft.DataCell(p3_share), ft.DataCell(p3_ratio)]),
+                ft.DataRow(cells=[ft.DataCell(ft.Text("1WTE", weight=ft.FontWeight.BOLD)), ft.DataCell(pw_share), ft.DataCell(pw_ratio)]),
+                ft.DataRow(cells=[ft.DataCell(ft.Text("1MTE", weight=ft.FontWeight.BOLD)), ft.DataCell(pm_share), ft.DataCell(pm_ratio)]),
+            ]
+        ))),
 
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (1M)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_1m)),
