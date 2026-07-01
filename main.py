@@ -256,7 +256,6 @@ def fetch_deribit_gex(currency="BTC"):
     parsed_options = []
     atm_iv = 50.0
     min_strike_dist = float('inf')
-    net_charm_accumulator = 0.0 
 
     net_speed_current = 0.0
     net_speed_down_1000 = 0.0
@@ -297,30 +296,17 @@ def fetch_deribit_gex(currency="BTC"):
             d2 = d1 - iv * math.sqrt(t_days) 
 
             pdf_value = native_norm_pdf(d1)
-            if option_type == 'C':
-                charm_per_contract = -pdf_value * ((0.0) / (iv * math.sqrt(t_days)) - d2 / (2 * t_days))
-            else:
-                charm_per_contract = pdf_value * ((0.0) / (iv * math.sqrt(t_days)) + d2 / (2 * t_days)) 
-
-            charm_day_footprint = charm_per_contract / 365.0 
-
             vanna_per_contract = -pdf_value * (d2 / iv)
             vanna_exposure_footprint = oi * vanna_per_contract * 0.01
             if option_type == 'P':
                 vanna_exposure_footprint = -vanna_exposure_footprint
         except Exception:
             approx_gamma = 0.0001 / max(1.0, abs(spot_price - strike))
-            charm_day_footprint = 0.0
             vanna_exposure_footprint = 0.0 
 
         gex_value = oi * approx_gamma * (spot_price ** 2) * 0.01 
-
-        item_charm_exposure = oi * charm_day_footprint
         if option_type == 'P':
             gex_value = -gex_value
-            item_charm_exposure = -item_charm_exposure 
-
-        net_charm_accumulator += item_charm_exposure 
 
         net_speed_current += calculate_speed_for_option(spot_price, strike, iv, days_to_expiry, oi, option_type)
         net_speed_down_1000 += calculate_speed_for_option(spot_price - 1000.0, strike, iv, days_to_expiry, oi, option_type)
@@ -470,15 +456,6 @@ def fetch_deribit_gex(currency="BTC"):
         }) 
 
     realized_vol_10d_val = calculate_realized_vol_10d(currency) 
-
-    pt_gex = (1.5 if net_gex_1m >= 0 else 0.0) + (1.5 if net_gex_3d >= 0 else 0.0)
-    pt_flow = 3.0 if net_flow_bias > 0 else 0.0
-    pt_price = (1.5 if spot_price > flip_level else 0.0) + (1.5 if spot_price > max_pain_level else 0.0)
-    pt_vol = 3.0 if (atm_iv - realized_vol_10d_val) < 0 else 0.0
-    total_cohesion_points = pt_gex + pt_flow + pt_price + pt_vol 
-
-    hourly_charm_rehedge_contracts = net_charm_accumulator / 24.0 
-
     return {
         "spot": spot_price,
         "call_gex_1m": call_gex_1m, "put_gex_1m": put_gex_1m, "net_gex_1m": net_gex_1m, "call_weight_1m": call_weight_pct_1m,
@@ -489,8 +466,6 @@ def fetch_deribit_gex(currency="BTC"):
         "skew_25d": skew_25d_val, 
         "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level,
         "implied_vol": atm_iv, "realized_vol": realized_vol_10d_val,
-        "trend_score": total_cohesion_points, "pt_gex": pt_gex, "pt_flow": pt_flow, "pt_price": pt_price, "pt_vol": pt_vol,
-        "net_charm_flow": hourly_charm_rehedge_contracts,
         "ndf_drift_total": total_cumulative_ndf_drift,
         "aggr_call_ask": total_c_ask, "aggr_call_bid": total_c_bid,
         "aggr_put_ask": total_p_ask, "aggr_put_bid": total_p_bid,
@@ -507,10 +482,6 @@ def fmt_gex(val):
 def fmt_signed_flow(val):
     sign = "+" if val > 0 else ""
     return f"{sign}{val / 1000000.0:,.1f}M" 
-
-def format_horizon_text(value):
-    action = "Expected to BUY" if value >= 0 else "Expected to SELL"
-    return f"{action} {abs(value):,.2f} BTC"
 
 def main(page: ft.Page):
     page.title = "DERIBIT GEX DASHBOARD"
@@ -567,19 +538,6 @@ def main(page: ft.Page):
     speed_down_txt = ft.Text("0.00", size=14, weight=ft.FontWeight.W_600)
     speed_up_txt = ft.Text("0.00", size=14, weight=ft.FontWeight.W_600)
     speed_regime_txt = ft.Text("Stable Neutral", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREEN_400) 
-
-    flow_1h_txt = ft.Text("0.00 BTC", size=14, weight=ft.FontWeight.BOLD)
-    flow_3h_txt = ft.Text("0.00 BTC", size=14, weight=ft.FontWeight.BOLD)
-    flow_6h_txt = ft.Text("0.00 BTC", size=14, weight=ft.FontWeight.BOLD) 
-
-    cohesion_main_txt = ft.Text("0.0 (Neutral)", size=14, weight=ft.FontWeight.BOLD)
-    gex_component_txt = ft.Text("0.0", size=14, color=ft.colors.GREY_400)
-    flow_component_txt = ft.Text("0.0", size=14, color=ft.colors.GREY_400)
-    price_component_txt = ft.Text("0.0", size=14, color=ft.colors.GREY_400)
-    vol_component_txt = ft.Text("0.0", size=14, color=ft.colors.GREY_400) 
-
-    charm_flow_metric_txt = ft.Text("0.0 BTC/hr", size=14, weight=ft.FontWeight.BOLD)
-    charm_bias_txt = ft.Text("Neutral", size=14, weight=ft.FontWeight.BOLD) 
 
     ndf_drift_metric_txt = ft.Text("$0.0M", size=14, weight=ft.FontWeight.BOLD)
     ndf_structural_signal_txt = ft.Text("Neutral Absorption", size=14, weight=ft.FontWeight.BOLD) 
@@ -744,67 +702,6 @@ def main(page: ft.Page):
                 speed_regime_txt.value = "Stable Net Gamma Profile"
                 speed_regime_txt.color = ft.colors.GREEN_400 
 
-            scr = m['trend_score']
-            gex_component_txt.value = f"{m['pt_gex']:.1f}"
-            flow_component_txt.value = f"{m['pt_flow']:.1f}"
-            price_component_txt.value = f"{m['pt_price']:.1f}"
-            vol_component_txt.value = f"{m['pt_vol']:.1f}" 
-
-            if scr <= 3.5:
-                cohesion_main_txt.value = f"{scr:.1f} (Strong Bearish)"
-                cohesion_main_txt.color = ft.colors.RED_700
-            elif scr <= 5.5:
-                cohesion_main_txt.value = f"{scr:.1f} (Mild Bearish)"
-                cohesion_main_txt.color = ft.colors.RED_400
-            elif scr <= 6.5:
-                cohesion_main_txt.value = f"{scr:.1f} (Neutral)"
-                cohesion_main_txt.color = ft.colors.GREY_400
-            elif scr <= 8.5:
-                cohesion_main_txt.value = f"{scr:.1f} (Mild Bullish)"
-                cohesion_main_txt.color = ft.colors.GREEN_300
-            else:
-                cohesion_main_txt.value = f"{scr:.1f} (Strong Bullish)"
-                cohesion_main_txt.color = ft.colors.GREEN_600 
-
-            c_flow_val = m['net_charm_flow']
-            charm_flow_metric_txt.value = f"{abs(c_flow_val):,.2f} BTC/hr"
-            if c_flow_val < -0.05:
-                charm_bias_txt.value = "Automated Buying (Bullish Tailwind)"
-                charm_bias_txt.color = ft.colors.GREEN_400
-            elif c_flow_val > 0.05:
-                charm_bias_txt.value = "Automated Selling (Bearish Headwind)"
-                charm_bias_txt.color = ft.colors.RED_400
-            else:
-                charm_bias_txt.value = "Stable Neutral"
-                charm_bias_txt.color = ft.colors.GREY_400 
-
-            charm_1h = c_flow_val * 1.0
-            charm_3h = c_flow_val * 3.0
-            charm_6h = c_flow_val * 6.0 
-
-            std_dev_1h = (iv_val / 100.0) * math.sqrt(1.0 / 8760.0)
-            std_dev_3h = (iv_val / 100.0) * math.sqrt(3.0 / 8760.0)
-            std_dev_6h = (iv_val / 100.0) * math.sqrt(6.0 / 8760.0) 
-
-            gex_contracts_3d = m['net_gex_3d'] / m['spot'] 
-
-            gamma_press_1h = gex_contracts_3d * std_dev_1h
-            gamma_press_3h = gex_contracts_3d * std_dev_3h
-            gamma_press_6h = gex_contracts_3d * std_dev_6h 
-
-            total_1h_flow = charm_1h + gamma_press_1h
-            total_3h_flow = charm_3h + gamma_press_3h
-            total_6h_flow = charm_6h + gamma_press_6h 
-
-            flow_1h_txt.value = format_horizon_text(total_1h_flow)
-            flow_1h_txt.color = ft.colors.GREEN_400 if total_1h_flow >= 0 else ft.colors.RED_400 
-
-            flow_3h_txt.value = format_horizon_text(total_3h_flow)
-            flow_3h_txt.color = ft.colors.GREEN_400 if total_3h_flow >= 0 else ft.colors.RED_400 
-
-            flow_6h_txt.value = format_horizon_text(total_6h_flow)
-            flow_6h_txt.color = ft.colors.GREEN_400 if total_6h_flow >= 0 else ft.colors.RED_400 
-
             chart_drift_val = m['ndf_drift_total']
             ndf_drift_metric_txt.value = fmt_signed_flow(chart_drift_val)
             if chart_drift_val > 0:
@@ -966,7 +863,6 @@ def main(page: ft.Page):
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
             id_skew_bar_chart,
             ft.Container(height=10),
-            # RENAME EXACT MATCH: Current 25D strike Skew -> 25D Skew
             ui_row_item("25D Skew", skew_25d_txt)
         ]))),
         
@@ -1000,28 +896,6 @@ def main(page: ft.Page):
             ui_row_item("Predictive Stress: Spot +$1000 Rally", speed_up_txt),
             ft.Divider(height=10, color=ft.colors.GREY_800),
             ui_row_item("Regime", speed_regime_txt)
-        ]))),
-
-        create_section_header("INSTITUTIONAL COHESION (ITC SCORE)"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([
-            ui_row_item("GEX Regime Component", gex_component_txt),
-            ui_row_item("Options Tape Flow Component", flow_component_txt),
-            ui_row_item("Price Structure Component", price_component_txt),
-            ui_row_item("Volatility Setup Component", vol_component_txt),
-            ui_row_item("ITC Score (12)", cohesion_main_txt)
-        ]))),
-
-        create_section_header("CHARM EXPOSURE ANALYSIS (CEX)"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([
-            ui_row_item("Estimated Decay Rehedge Flow", charm_flow_metric_txt),
-            ui_row_item("Dealer Bias", charm_bias_txt)
-        ]))),
-
-        create_section_header("DEALER REAL-TIME HEDGING FLOW ESTIMATOR"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([
-            ui_row_item("Next 1H", flow_1h_txt),
-            ui_row_item("Next 3H", flow_3h_txt),
-            ui_row_item("Next 6H", flow_6h_txt)
         ]))),
 
         create_section_header("CUMULATIVE DELTA PREMIUM DRIFT (NDF)"),
