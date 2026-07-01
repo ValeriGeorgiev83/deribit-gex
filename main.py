@@ -235,6 +235,7 @@ def background_data_worker(currency="BTC"):
                         if row['days_to_expiry'] <= 3.0:
                             oi_snapshot_map[bk][row['type']] += float(row['oi'])
 
+                # FIXED: Changed syntax from comma separation to structured colon mapping token parameters
                 oi_history_snapshot = {"timestamp": hourly_time_tag, "oi_distribution": oi_snapshot_map, "spot": spot_price}
                 redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
                 redis.ltrim(REDIS_OI_MIGRATION_KEY, -MAX_HISTORY_POINTS, -1)
@@ -475,10 +476,8 @@ def fetch_deribit_gex(currency="BTC"):
     s_3d, r_3d = calculate_expiry_slice_metrics(base_df, 0.0, 3.0)
     s_1m, r_1m = calculate_expiry_slice_metrics(base_df, 3.0001, 31.0)
 
-    # HYBRID HISTORY POSITION ENGINE DESIGN 
     gex_history_deltas = {}
     try:
-        # Micro calculations pull high-frequency tape matrices dynamically
         micro_horizons = {"15M": 3, "01H": 12, "04H": 48}
         for tag, lookback in micro_horizons.items():
             if len(valid_flow_records) >= lookback:
@@ -493,7 +492,6 @@ def fetch_deribit_gex(currency="BTC"):
             else:
                 gex_history_deltas[tag] = {"net": 0.0, "calls": 0.0, "puts": 0.0}
 
-        # Macro calculations fallback to index structure elements cleanly
         all_snapshots = redis.lrange(REDIS_OI_MIGRATION_KEY, 0, -1)
         if all_snapshots:
             parsed_snapshots = [json.loads(s) for s in all_snapshots]
@@ -974,7 +972,6 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
 
-        # UPDATED MATRIX ENGINE: GAMMA EXPOSURE HISTORY (Powered by Hybrid High-Frequency Tape lookups)
         create_section_header("GAMMA EXPOSURE HISTORY"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ft.Row([
