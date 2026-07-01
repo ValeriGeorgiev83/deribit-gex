@@ -378,7 +378,6 @@ def fetch_deribit_gex(currency="BTC"):
         p_idx = (puts_7d['strike'] - spot_price * 0.95).abs().idxmin() if not puts_7d.empty else None
         
         if c_idx is not None and p_idx is not None:
-            # FIX: Extracted raw percentage spread directly from the native API payload index pool
             skew_25d_val = float(puts_7d.loc[p_idx, 'iv'] - calls_7d.loc[c_idx, 'iv'])
 
     strikes_3d = sorted(df_3d['strike'].unique())
@@ -679,7 +678,6 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}" 
 
-            # FIXED: Removed the secondary math scaling step to mirror true base percentages
             sk_val = m['skew_25d']
             if sk_val > 0.5:
                 skew_25d_txt.value = f"{sk_val:+.2f}% (Put Premium / Bearish Bias)"
@@ -968,7 +966,8 @@ def main(page: ft.Page):
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
             id_skew_bar_chart,
             ft.Container(height=10),
-            ui_row_item("Current 25D strike Skew", skew_25d_txt)
+            # RENAME EXACT MATCH: Current 25D strike Skew -> 25D Skew
+            ui_row_item("25D Skew", skew_25d_txt)
         ]))),
         
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
