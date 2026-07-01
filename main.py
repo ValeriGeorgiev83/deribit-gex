@@ -109,7 +109,16 @@ def background_data_worker(currency="BTC"):
                         min_strike_dist = dist
                         atm_iv = iv * 100.0 
 
-                parsed_options.append({'strike': strike, 'oi': oi, 'days_to_expiry': days_to_expiry, 'type': option_type})
+                # Real calculation pipeline execution inside historical parser snapshots engine bounds
+                try:
+                    t_days = max(days_to_expiry, 0.01) / 365.0
+                    distance = abs(math.log(spot_price / strike))
+                    approx_gamma = (1.0 / (iv * math.sqrt(t_days) * math.sqrt(2 * math.pi))) * math.exp(-0.5 * (distance / (iv * math.sqrt(t_days)))**2) / spot_price
+                    gex_val = oi * approx_gamma * (spot_price ** 2) * 0.01
+                except Exception:
+                    gex_val = 0.0
+
+                parsed_options.append({'strike': strike, 'oi': oi, 'days_to_expiry': days_to_expiry, 'type': option_type, 'gex': gex_val})
 
             net_call_fiat_flow = 0.0
             net_put_fiat_flow = 0.0
@@ -227,7 +236,14 @@ def background_data_worker(currency="BTC"):
                 base_df = pd.DataFrame(parsed_options)
                 
                 oi_snapshot_map = {}
+                call_gex_3d_snap = 0.0
+                put_gex_3d_snap = 0.0
+
                 if not base_df.empty:
+                    df_3d_slice = base_df[base_df['days_to_expiry'] <= 3.0]
+                    call_gex_3d_snap = df_3d_slice[df_3d_slice['type'] == 'C']['gex'].sum()
+                    put_gex_3d_snap = df_3d_slice[df_3d_slice['type'] == 'P']['gex'].sum()
+
                     for _, row in base_df.iterrows():
                         bk = str(round(row['strike'] / 500.0) * 500)
                         if bk not in oi_snapshot_map:
@@ -235,8 +251,14 @@ def background_data_worker(currency="BTC"):
                         if row['days_to_expiry'] <= 3.0:
                             oi_snapshot_map[bk][row['type']] += float(row['oi'])
 
-                # FIXED: Changed syntax from comma separation to structured colon mapping token parameters
-                oi_history_snapshot = {"timestamp": hourly_time_tag, "oi_distribution": oi_snapshot_map, "spot": spot_price}
+                # FIXED: Colons mapped seamlessly, storing pre-computed exact real 3D GEX data blocks
+                oi_history_snapshot = {
+                    "timestamp": hourly_time_tag, 
+                    "oi_distribution": oi_snapshot_map, 
+                    "spot": spot_price,
+                    "stored_call_gex": float(call_gex_3d_snap),
+                    "stored_put_gex": float(put_gex_3d_snap)
+                }
                 redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
                 redis.ltrim(REDIS_OI_MIGRATION_KEY, -MAX_HISTORY_POINTS, -1)
 
@@ -495,31 +517,6 @@ def fetch_deribit_gex(currency="BTC"):
         all_snapshots = redis.lrange(REDIS_OI_MIGRATION_KEY, 0, -1)
         if all_snapshots:
             parsed_snapshots = [json.loads(s) for s in all_snapshots]
-            
-            def calculate_snapshot_gex(snapshot):
-                snap_spot = snapshot.get("spot", spot_price)
-                snap_dist = snapshot.get("oi_distribution", {})
-                c_gex_acc = 0.0
-                p_gex_acc = 0.0
-                
-                for k_str, val_map in snap_dist.items():
-                    stk_val = float(k_str)
-                    if isinstance(val_map, dict):
-                        c_oi = val_map.get("C", 0.0)
-                        p_oi = val_map.get("P", 0.0)
-                    else:
-                        c_oi = float(val_map) * 0.5
-                        p_oi = float(val_map) * 0.5
-                        
-                    try:
-                        dist = abs(math.log(snap_spot / stk_val))
-                        approx_g = (1.0 / (0.5 * math.sqrt(0.01) * math.sqrt(2 * math.pi))) * math.exp(-0.5 * (dist / (0.5 * math.sqrt(0.01)))**2) / snap_spot
-                        c_gex_acc += c_oi * approx_g * (snap_spot ** 2) * 0.01
-                        p_gex_acc += -p_oi * approx_g * (snap_spot ** 2) * 0.01
-                    except Exception: pass
-                return c_gex_acc, p_gex_acc
-
-            curr_c_gex, curr_p_gex = call_gex_3d, put_gex_3d
             macro_horizons = {"12H": 12, "24H": 24, "72H": 72}
             
             for tag, hr in macro_horizons.items():
@@ -528,11 +525,14 @@ def fetch_deribit_gex(currency="BTC"):
                 else:
                     target_snap = parsed_snapshots[0] if parsed_snapshots else {}
                     
-                old_c, old_p = calculate_snapshot_gex(target_snap) if target_snap else (curr_c_gex, curr_p_gex)
+                # FIXED: Logic extracts the real absolute numbers saved by the data worker engine cleanly
+                old_c = target_snap.get("stored_call_gex", 0.0)
+                old_p = target_snap.get("stored_put_gex", 0.0)
+                
                 gex_history_deltas[tag] = {
-                    "net": (curr_c_gex + curr_p_gex) - (old_c + old_p),
-                    "calls": curr_c_gex - old_c,
-                    "puts": curr_p_gex - old_p
+                    "net": (call_gex_3d + put_gex_3d) - (old_c + old_p),
+                    "calls": call_gex_3d - old_c,
+                    "puts": put_gex_3d - old_p
                 }
     except Exception: pass
 
