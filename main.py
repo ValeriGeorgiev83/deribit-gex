@@ -940,12 +940,12 @@ def main(page: ft.Page):
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (3D)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_3d)),
 
-        # DYNAMIC COMPARATIVE CELL 1
-        create_section_header("SHORT-TERM CALL OPTIONS DISTRIBUTION (<= 3 DAYS / ALIGNED SCALE)"),
+        # RENAMED CARD 1
+        create_section_header("CALL OPTIONS DISTRIBUTION (3D)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=calls_oi_chart_3d)),
 
-        # DYNAMIC COMPARATIVE CELL 2
-        create_section_header("SHORT-TERM PUT OPTIONS DISTRIBUTION (<= 3 DAYS / ALIGNED SCALE)"),
+        # RENAMED CARD 2
+        create_section_header("PUT OPTIONS DISTRIBUTION (3D)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=puts_oi_chart_3d)),
 
         create_section_header("IMPORTANT LEVELS"),
