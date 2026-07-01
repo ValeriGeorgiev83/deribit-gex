@@ -455,7 +455,6 @@ def fetch_deribit_gex(currency="BTC"):
             "calls_oi_3d": calls_oi_3d, "puts_oi_3d": puts_oi_3d
         }) 
 
-    # DYNAMIC LOGIC POOL FOR EXPLORATION PROFILE MATRIX ENGINE
     total_oi_global = base_df['oi'].sum() if not base_df.empty else 1.0
     
     def calculate_expiry_slice_metrics(df, min_d, max_d):
@@ -468,11 +467,10 @@ def fetch_deribit_gex(currency="BTC"):
         ratio = (c_oi / p_oi) if p_oi > 0 else (c_oi if c_oi > 0 else 1.0)
         return share, ratio
 
-    s_0d, r_0d = calculate_expiry_slice_metrics(base_df, 0.0, 0.25) # Standard 0DTE slice threshold
-    s_1d, r_1d = calculate_expiry_slice_metrics(base_df, 0.25, 1.1)
-    s_3d, r_3d = calculate_expiry_slice_metrics(base_df, 1.1, 3.1)
-    s_1w, r_1w = calculate_expiry_slice_metrics(base_df, 3.1, 7.1)
-    s_1m, r_1m = calculate_expiry_slice_metrics(base_df, 7.1, 31.0)
+    # Consolidated 3DTE slice to encapsulate all options up to and including 3 days
+    s_3d, r_3d = calculate_expiry_slice_metrics(base_df, 0.0, 3.0)
+    # 1MTE remains custom tracking the range from 3 days down up to 1 calendar month
+    s_1m, r_1m = calculate_expiry_slice_metrics(base_df, 3.0001, 31.0)
 
     realized_vol_10d_val = calculate_realized_vol_10d(currency) 
     return {
@@ -492,7 +490,7 @@ def fetch_deribit_gex(currency="BTC"):
         "iv_direction": "EXPANDING" if iv_shift_multiplier > 0 else "CRUSHING",
         "raw_option_dataframe": bucket_data_1m,
         "expiry_profile": {
-            "0d": (s_0d, r_0d), "1d": (s_1d, r_1d), "3d": (s_3d, r_3d), "1w": (s_1w, r_1w), "1m": (s_1m, r_1m)
+            "3d": (s_3d, r_3d), "1m": (s_1m, r_1m)
         }
     } 
 
@@ -540,15 +538,9 @@ def main(page: ft.Page):
     res_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_300)
     sup_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.PINK_400) 
 
-    # EXPIRE ANALYSIS TEXT INSTANCES POOL
-    p0_share = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
-    p0_ratio = ft.Text("1.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_GREY_300)
-    p1_share = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
-    p1_ratio = ft.Text("1.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_GREY_300)
+    # Cleaned Text Instance Fields for the 3-column / 3-row layout structure
     p3_share = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
     p3_ratio = ft.Text("1.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_GREY_300)
-    pw_share = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
-    pw_ratio = ft.Text("1.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_GREY_300)
     pm_share = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
     pm_ratio = ft.Text("1.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_GREY_300)
 
@@ -670,16 +662,10 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}" 
 
-            # EXPIRY MATRIX WRITE BACK INTERPOLATION
+            # Live mapping from backend payload array indices
             ep = m['expiry_profile']
-            p0_share.value = f"{ep['0d'][0]:.2f}%"
-            p0_ratio.value = f"{ep['0d'][1]:.2f}"
-            p1_share.value = f"{ep['1d'][0]:.2f}%"
-            p1_ratio.value = f"{ep['1d'][1]:.2f}"
             p3_share.value = f"{ep['3d'][0]:.2f}%"
             p3_ratio.value = f"{ep['3d'][1]:.2f}"
-            pw_share.value = f"{ep['1w'][0]:.2f}%"
-            pw_ratio.value = f"{ep['1w'][1]:.2f}"
             pm_share.value = f"{ep['1m'][0]:.2f}%"
             pm_ratio.value = f"{ep['1m'][1]:.2f}"
 
@@ -888,22 +874,26 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
 
-        # NEW RESTRUCTURED: EXPIRATION TIMELINE COMPOSITION MATRIX
-        create_section_header("OPTIONS EXPIRATION TIME HORIZON ANALYSIS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.DataTable(
-            columns=[
-                ft.DataColumn(ft.Text("", size=13, color=ft.colors.GREY_400)),
-                ft.DataColumn(ft.Text("Share", size=13, color=ft.colors.GREY_400)),
-                ft.DataColumn(ft.Text("C/P", size=13, color=ft.colors.GREY_400)),
-            ],
-            rows=[
-                ft.DataRow(cells=[ft.DataCell(ft.Text("0DTE", weight=ft.FontWeight.BOLD)), ft.DataCell(p0_share), ft.DataCell(p0_ratio)]),
-                ft.DataRow(cells=[ft.DataCell(ft.Text("1DTE", weight=ft.FontWeight.BOLD)), ft.DataCell(p1_share), ft.DataCell(p1_ratio)]),
-                ft.DataRow(cells=[ft.DataCell(ft.Text("3DTE", weight=ft.FontWeight.BOLD)), ft.DataCell(p3_share), ft.DataCell(p3_ratio)]),
-                ft.DataRow(cells=[ft.DataCell(ft.Text("1WTE", weight=ft.FontWeight.BOLD)), ft.DataCell(pw_share), ft.DataCell(pw_ratio)]),
-                ft.DataRow(cells=[ft.DataCell(ft.Text("1MTE", weight=ft.FontWeight.BOLD)), ft.DataCell(pm_share), ft.DataCell(pm_ratio)]),
-            ]
-        ))),
+        # RENAMED: MARKET SHARE + Standardized layout width block configuration
+        create_section_header("MARKET SHARE"),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([
+            ft.Row([
+                ft.Text("", size=14, weight=ft.FontWeight.BOLD, width=80),
+                ft.Text("Share", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_400, expand=True, text_align=ft.TextAlign.RIGHT),
+                ft.Text("C/P", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_400, expand=True, text_align=ft.TextAlign.RIGHT)
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Divider(height=1, color=ft.colors.GREY_800),
+            ft.Row([
+                ft.Text("3DTE", size=14, weight=ft.FontWeight.W_600, width=80),
+                ft.Container(content=p3_share, expand=True, alignment=ft.alignment.center_right),
+                ft.Container(content=p3_ratio, expand=True, alignment=ft.alignment.center_right)
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Row([
+                ft.Text("1MTE", size=14, weight=ft.FontWeight.W_600, width=80),
+                ft.Container(content=pm_share, expand=True, alignment=ft.alignment.center_right),
+                ft.Container(content=pm_ratio, expand=True, alignment=ft.alignment.center_right)
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        ]))),
 
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (1M)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_1m)),
