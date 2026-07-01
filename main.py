@@ -69,10 +69,7 @@ def calculate_realized_vol_10d(currency="BTC"):
         return 50.0 
 
 def background_data_worker(currency="BTC"):
-    """
-    Independent data collection engine running in a separate thread.
-    Saves inflows, metrics, and migrations to Upstash automatically every 5 minutes.
-    """
+    """Independent data collection engine running in a separate thread."""
     print("Background Upstash Processing Worker Loop Engaged.")
     while True:
         try:
@@ -377,11 +374,11 @@ def fetch_deribit_gex(currency="BTC"):
         calls_7d = df_7d[df_7d['type'] == 'C']
         puts_7d = df_7d[df_7d['type'] == 'P']
         
-        # FIXED: More resilient fallback alignment if absolute 5% distance contains empty sets
         c_idx = (calls_7d['strike'] - spot_price * 1.05).abs().idxmin() if not calls_7d.empty else None
         p_idx = (puts_7d['strike'] - spot_price * 0.95).abs().idxmin() if not puts_7d.empty else None
         
         if c_idx is not None and p_idx is not None:
+            # FIX: Extracted raw percentage spread directly from the native API payload index pool
             skew_25d_val = float(puts_7d.loc[p_idx, 'iv'] - calls_7d.loc[c_idx, 'iv'])
 
     strikes_3d = sorted(df_3d['strike'].unique())
@@ -490,7 +487,7 @@ def fetch_deribit_gex(currency="BTC"):
         "max_pain": max_pain_level, "flip": flip_level, "breakout": breakout_price,
         "resistance": resistance_level, "support": support_level, "call_inflow": total_accumulated_call_flow,
         "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "chart_data": chart_matrix,
-        "skew_25d": skew_25d_val, # FIXED: passing actual parsed float variable name
+        "skew_25d": skew_25d_val, 
         "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level,
         "implied_vol": atm_iv, "realized_vol": realized_vol_10d_val,
         "trend_score": total_cohesion_points, "pt_gex": pt_gex, "pt_flow": pt_flow, "pt_price": pt_price, "pt_vol": pt_vol,
@@ -682,8 +679,8 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}" 
 
-            # FIXED: Updating the 25D Skew UI layout element dynamically
-            sk_val = m['skew_25d'] * 100.0
+            # FIXED: Removed the secondary math scaling step to mirror true base percentages
+            sk_val = m['skew_25d']
             if sk_val > 0.5:
                 skew_25d_txt.value = f"{sk_val:+.2f}% (Put Premium / Bearish Bias)"
                 skew_25d_txt.color = ft.colors.RED_400
