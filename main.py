@@ -109,7 +109,6 @@ def background_data_worker(currency="BTC"):
                         min_strike_dist = dist
                         atm_iv = iv * 100.0 
 
-                # Real calculation pipeline execution inside historical parser snapshots engine bounds
                 try:
                     t_days = max(days_to_expiry, 0.01) / 365.0
                     distance = abs(math.log(spot_price / strike))
@@ -251,7 +250,6 @@ def background_data_worker(currency="BTC"):
                         if row['days_to_expiry'] <= 3.0:
                             oi_snapshot_map[bk][row['type']] += float(row['oi'])
 
-                # FIXED: Colons mapped seamlessly, storing pre-computed exact real 3D GEX data blocks
                 oi_history_snapshot = {
                     "timestamp": hourly_time_tag, 
                     "oi_distribution": oi_snapshot_map, 
@@ -500,6 +498,7 @@ def fetch_deribit_gex(currency="BTC"):
 
     gex_history_deltas = {}
     try:
+        # FIXED: String keys changed to singular name definitions matching raw data snapshots
         micro_horizons = {"15M": 3, "01H": 12, "04H": 48}
         for tag, lookback in micro_horizons.items():
             if len(valid_flow_records) >= lookback:
@@ -525,7 +524,6 @@ def fetch_deribit_gex(currency="BTC"):
                 else:
                     target_snap = parsed_snapshots[0] if parsed_snapshots else {}
                     
-                # FIXED: Logic extracts the real absolute numbers saved by the data worker engine cleanly
                 old_c = target_snap.get("stored_call_gex", 0.0)
                 old_p = target_snap.get("stored_put_gex", 0.0)
                 
