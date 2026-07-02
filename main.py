@@ -94,7 +94,6 @@ def background_data_worker(currency="BTC"):
                 oi = float(item.get('open_interest', 0))
                 if oi <= 0: continue
                 expiry_str = parts[1]
-                option_type = parts[3]
                 try:
                     expiry_dt = datetime.strptime(expiry_str, "%d%b%y").replace(tzinfo=timezone.utc).replace(hour=8, minute=0, second=0)
                     days_to_expiry = (expiry_dt - now).total_seconds() / 86400.0
@@ -109,15 +108,7 @@ def background_data_worker(currency="BTC"):
                         min_strike_dist = dist
                         atm_iv = iv * 100.0 
 
-                try:
-                    t_days = max(days_to_expiry, 0.01) / 365.0
-                    distance = abs(math.log(spot_price / strike))
-                    approx_gamma = (1.0 / (iv * math.sqrt(t_days) * math.sqrt(2 * math.pi))) * math.exp(-0.5 * (distance / (iv * math.sqrt(t_days)))**2) / spot_price
-                    gex_val = oi * approx_gamma * (spot_price ** 2) * 0.01
-                except Exception:
-                    gex_val = 0.0
-
-                parsed_options.append({'strike': strike, 'oi': oi, 'days_to_expiry': days_to_expiry, 'type': option_type, 'gex': gex_val})
+                parsed_options.append({'strike': strike, 'oi': oi, 'days_to_expiry': days_to_expiry})
 
             net_call_fiat_flow = 0.0
             net_put_fiat_flow = 0.0
@@ -233,32 +224,15 @@ def background_data_worker(currency="BTC"):
                     redis.rpop(REDIS_OI_MIGRATION_KEY)
 
                 base_df = pd.DataFrame(parsed_options)
-                
                 oi_snapshot_map = {}
-                call_gex_3d_snap = 0.0
-                put_gex_3d_snap = 0.0
-
                 if not base_df.empty:
-                    df_3d_slice = base_df[base_df['days_to_expiry'] <= 3.0]
-                    call_gex_3d_snap = df_3d_slice[df_3d_slice['type'] == 'C']['gex'].sum()
-                    put_gex_3d_snap = df_3d_slice[df_3d_slice['type'] == 'P']['gex'].sum()
+                    base_df['strike_bucket'] = base_df['strike'].apply(lambda x: round(x / 500.0) * 500)
+                    oi_snapshot_map = base_df.groupby('strike_bucket')['oi'].sum().to_dict()
+                    oi_snapshot_map = {str(k): float(v) for k, v in oi_snapshot_map.items()} 
 
-                    for _, row in base_df.iterrows():
-                        bk = str(round(row['strike'] / 500.0) * 500)
-                        if bk not in oi_snapshot_map:
-                            oi_snapshot_map[bk] = {"C": 0.0, "P": 0.0}
-                        if row['days_to_expiry'] <= 3.0:
-                            oi_snapshot_map[bk][row['type']] += float(row['oi'])
-
-                oi_history_snapshot = {
-                    "timestamp": hourly_time_tag, 
-                    "oi_distribution": oi_snapshot_map, 
-                    "spot": spot_price,
-                    "stored_call_gex": float(call_gex_3d_snap),
-                    "stored_put_gex": float(put_gex_3d_snap)
-                }
+                oi_history_snapshot = {"timestamp": hourly_time_tag, "oi_distribution": oi_snapshot_map}
                 redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
-                redis.ltrim(REDIS_OI_MIGRATION_KEY, -MAX_HISTORY_POINTS, -1)
+                redis.ltrim(REDIS_OI_MIGRATION_KEY, -168, -1)
 
             print("Background state sync complete.")
         except Exception as loop_ex:
@@ -493,46 +467,10 @@ def fetch_deribit_gex(currency="BTC"):
         ratio = (c_oi / p_oi) if p_oi > 0 else (c_oi if c_oi > 0 else 1.0)
         return share, ratio
 
+    # Consolidated 3DTE slice to encapsulate all options up to and including 3 days
     s_3d, r_3d = calculate_expiry_slice_metrics(base_df, 0.0, 3.0)
+    # 1MTE remains custom tracking the range from 3 days down up to 1 calendar month
     s_1m, r_1m = calculate_expiry_slice_metrics(base_df, 3.0001, 31.0)
-
-    gex_history_deltas = {}
-    try:
-        # FIXED: String keys changed to singular name definitions matching raw data snapshots
-        micro_horizons = {"15M": 3, "01H": 12, "04H": 48}
-        for tag, lookback in micro_horizons.items():
-            if len(valid_flow_records) >= lookback:
-                slice_records = valid_flow_records[-lookback:]
-                c_delta_acc = sum(r.get("call_flow", 0.0) for r in slice_records) * 0.005
-                p_delta_acc = sum(r.get("put_flow", 0.0) for r in slice_records) * 0.005
-                gex_history_deltas[tag] = {
-                    "net": c_delta_acc - p_delta_acc,
-                    "calls": c_delta_acc,
-                    "puts": -p_delta_acc
-                }
-            else:
-                gex_history_deltas[tag] = {"net": 0.0, "calls": 0.0, "puts": 0.0}
-
-        all_snapshots = redis.lrange(REDIS_OI_MIGRATION_KEY, 0, -1)
-        if all_snapshots:
-            parsed_snapshots = [json.loads(s) for s in all_snapshots]
-            macro_horizons = {"12H": 12, "24H": 24, "72H": 72}
-            
-            for tag, hr in macro_horizons.items():
-                if len(parsed_snapshots) >= hr:
-                    target_snap = parsed_snapshots[-hr]
-                else:
-                    target_snap = parsed_snapshots[0] if parsed_snapshots else {}
-                    
-                old_c = target_snap.get("stored_call_gex", 0.0)
-                old_p = target_snap.get("stored_put_gex", 0.0)
-                
-                gex_history_deltas[tag] = {
-                    "net": (call_gex_3d + put_gex_3d) - (old_c + old_p),
-                    "calls": call_gex_3d - old_c,
-                    "puts": put_gex_3d - old_p
-                }
-    except Exception: pass
 
     realized_vol_10d_val = calculate_realized_vol_10d(currency) 
     return {
@@ -553,8 +491,7 @@ def fetch_deribit_gex(currency="BTC"):
         "raw_option_dataframe": bucket_data_1m,
         "expiry_profile": {
             "3d": (s_3d, r_3d), "1m": (s_1m, r_1m)
-        },
-        "gex_history": gex_history_deltas
+        }
     } 
 
 def fmt_gex(val):
@@ -565,18 +502,6 @@ def fmt_gex(val):
 def fmt_signed_flow(val):
     sign = "+" if val > 0 else ""
     return f"{sign}{val / 1000000.0:,.1f}M" 
-
-def fmt_history_gex_text(ui_element, val):
-    m_val = round(val / 1000000.0)
-    if m_val > 0:
-        ui_element.value = f"+{m_val}M"
-        ui_element.color = ft.colors.GREEN_400
-    elif m_val < 0:
-        ui_element.value = f"-{abs(m_val)}M"
-        ui_element.color = ft.colors.RED_400
-    else:
-        ui_element.value = "0M"
-        ui_element.color = ft.colors.GREY_400
 
 def main(page: ft.Page):
     page.title = "DERIBIT GEX DASHBOARD"
@@ -613,18 +538,11 @@ def main(page: ft.Page):
     res_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_300)
     sup_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.PINK_400) 
 
+    # Cleaned Text Instance Fields for the 3-column / 3-row layout structure
     p3_share = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
     p3_ratio = ft.Text("1.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_GREY_300)
     pm_share = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
     pm_ratio = ft.Text("1.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_GREY_300)
-
-    history_elements = {}
-    for t_tag in ["15M", "01H", "04H", "12H", "24H", "72H"]:
-        history_elements[t_tag] = {
-            "net": ft.Text("0M", size=14, weight=ft.FontWeight.W_600),
-            "calls": ft.Text("0M", size=14, weight=ft.FontWeight.W_600),
-            "puts": ft.Text("0M", size=14, weight=ft.FontWeight.W_600)
-        }
 
     inflows_call_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
     outflows_put_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
@@ -744,18 +662,12 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}" 
 
+            # Live mapping from backend payload array indices
             ep = m['expiry_profile']
             p3_share.value = f"{ep['3d'][0]:.2f}%"
             p3_ratio.value = f"{ep['3d'][1]:.2f}"
             pm_share.value = f"{ep['1m'][0]:.2f}%"
             pm_ratio.value = f"{ep['1m'][1]:.2f}"
-
-            g_hist = m.get("gex_history", {})
-            for t_tag, ui_set in history_elements.items():
-                if t_tag in g_hist:
-                    fmt_history_gex_text(ui_set["net"], g_hist[t_tag]["net"])
-                    fmt_history_gex_text(ui_set["calls"], g_hist[t_tag]["calls"])
-                    fmt_history_gex_text(ui_set["puts"], g_hist[t_tag]["puts"])
 
             sk_val = m['skew_25d']
             if sk_val > 0.5:
@@ -946,14 +858,6 @@ def main(page: ft.Page):
             
             page.update()
 
-    def make_history_row(label, net_c, calls_c, puts_c):
-        return ft.Row([
-            ft.Text(label, size=14, weight=ft.FontWeight.BOLD, width=60),
-            ft.Container(content=net_c, expand=True, alignment=ft.alignment.center_right),
-            ft.Container(content=calls_c, expand=True, alignment=ft.alignment.center_right),
-            ft.Container(content=puts_c, expand=True, alignment=ft.alignment.center_right)
-        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-
     page.add(
         ft.Row([ft.Text("DERIBIT GEX DASHBOARD", size=20, weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.START),
         ft.Card(content=ft.Container(content=ft.Row([ft.Text("Bitcoin Spot Price", size=11, color=ft.colors.GREY_500), spot_price_container], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
@@ -970,23 +874,7 @@ def main(page: ft.Page):
         create_section_header("IMPORTANT LEVELS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
 
-        create_section_header("GAMMA EXPOSURE HISTORY"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([
-            ft.Row([
-                ft.Text("", size=14, weight=ft.FontWeight.BOLD, width=60),
-                ft.Text("Net", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_400, expand=True, text_align=ft.TextAlign.RIGHT),
-                ft.Text("Calls", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_400, expand=True, text_align=ft.TextAlign.RIGHT),
-                ft.Text("Puts", size=14, weight=ft.FontWeight.BOLD, color=ft.colors.GREY_400, expand=True, text_align=ft.TextAlign.RIGHT)
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ft.Divider(height=1, color=ft.colors.GREY_800),
-            make_history_row("15M", history_elements["15M"]["net"], history_elements["15M"]["calls"], history_elements["15M"]["puts"]),
-            make_history_row("01H", history_elements["01H"]["net"], history_elements["01H"]["calls"], history_elements["01H"]["puts"]),
-            make_history_row("04H", history_elements["04H"]["net"], history_elements["04H"]["calls"], history_elements["04H"]["puts"]),
-            make_history_row("12H", history_elements["12H"]["net"], history_elements["12H"]["calls"], history_elements["12H"]["puts"]),
-            make_history_row("24H", history_elements["24H"]["net"], history_elements["24H"]["calls"], history_elements["24H"]["puts"]),
-            make_history_row("72H", history_elements["72H"]["net"], history_elements["72H"]["calls"], history_elements["72H"]["puts"]),
-        ]))),
-
+        # RENAMED: MARKET SHARE + Standardized layout width block configuration
         create_section_header("MARKET SHARE"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ft.Row([
