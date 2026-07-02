@@ -110,7 +110,6 @@ def background_data_worker(currency="BTC"):
                         min_strike_dist = dist
                         atm_iv = iv * 100.0 
 
-                # Structural pre-calculated mapping pipeline parameters
                 try:
                     t_days = max(days_to_expiry, 0.01) / 365.0
                     distance = abs(math.log(spot_price / strike))
@@ -130,9 +129,6 @@ def background_data_worker(currency="BTC"):
             call_bid_hit_premium = 0.0
             put_ask_hit_premium = 0.0
             put_bid_hit_premium = 0.0 
-
-            for trade in data_list:
-                pass
 
             trades_url = f"https://www.deribit.com/api/v2/public/get_last_trades_by_currency?currency={currency}&kind=option&count=1000"
             trades_res = requests.get(trades_url).json()
@@ -262,7 +258,6 @@ def background_data_worker(currency="BTC"):
                 redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
                 redis.ltrim(REDIS_OI_MIGRATION_KEY, -168, -1)
                 
-                # New Additional Key: Stores raw directional GEX layers dynamically
                 net_gex_history_snapshot = {
                     "timestamp": hourly_time_tag,
                     "hour_label": hour_string_label,
@@ -511,7 +506,6 @@ def fetch_deribit_gex(currency="BTC"):
 
     realized_vol_10d_val = calculate_realized_vol_10d(currency)
     
-    # Extract structural pre-calculated rolling yellow bar indicators
     net_gex_24h_payload = []
     try:
         raw_gex_records = redis.lrange(REDIS_NET_GEX_24H_KEY, 0, -1)
@@ -558,7 +552,7 @@ def main(page: ft.Page):
 
     net_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
     net_gex_24h_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
-    net_gex_24h_left_axis = ft.ChartAxis(labels=[], labels_size=42)
+    net_gex_24h_left_axis = ft.ChartAxis(labels=[], labels_size=0) # FIXED: Changed size to 0 to hide left axis space completely
     calls_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
     puts_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
@@ -620,7 +614,6 @@ def main(page: ft.Page):
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240) 
 
-    # Newly Designed 24H Net GEX Rolling Profile Yellow Bar Engine
     net_gex_24h_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=net_gex_24h_bottom_axis, left_axis=net_gex_24h_left_axis,
         horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=50000000.0),
@@ -895,11 +888,10 @@ def main(page: ft.Page):
                     label_color = ft.colors.BLUE_200 if is_spot else ft.colors.GREY_400
                     new_labels.append(ft.ChartAxisLabel(value=item['index'], label=ft.Text(f"{strike_val/1000:.0f}k", size=10, color=label_color, rotate=45, weight=ft.FontWeight.BOLD if is_spot else ft.FontWeight.NORMAL))) 
 
-            # Render logic for the new yellow 24H Net GEX History chart
             gex_24h_history_list = m.get("net_gex_24h_history", [])
             groups_net_gex_24h = []
             labels_gex_24h = []
-            max_abs_gex_24h = 50000000.0  # Safe initial baseline matrix standard
+            max_abs_gex_24h = 50000000.0 
 
             for idx, item in enumerate(gex_24h_history_list):
                 val_gex = item.get("net_gex", 0.0)
@@ -920,16 +912,8 @@ def main(page: ft.Page):
             net_gex_24h_bar_chart.bar_groups = groups_net_gex_24h
             net_gex_24h_bottom_axis.labels = labels_gex_24h
 
-            # Generate dynamic labels for left-side micro-grid layout scaled to millions (M)
-            left_labels_24h = []
-            y_ticks_count = int(bound_gex_24h / 50000000.0)
-            for step in range(-y_ticks_count, y_ticks_count + 1):
-                tick_val = step * 50000000.0
-                left_labels_24h.append(ft.ChartAxisLabel(
-                    value=tick_val,
-                    label=ft.Text(f"{tick_val / 1000000.0:,.0f}M", size=9, color=ft.colors.GREY_500)
-                ))
-            net_gex_24h_left_axis.labels = left_labels_24h
+            # FIXED: Removed custom text mappings to keep left axis completely clean of text strings
+            net_gex_24h_left_axis.labels = []
 
             gex_bar_chart_3d.bar_groups = groups_net_3d
             net_axis_3d.labels = new_labels
@@ -955,7 +939,6 @@ def main(page: ft.Page):
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (3D)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_3d)), 
 
-        # INSERTED: 24H NET GAMMA EXPOSURE (3D) card located right beneath the Strike GEX plot frame
         create_section_header("24H NET GAMMA EXPOSURE (3D)"),
         ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=net_gex_24h_bar_chart)),
 
