@@ -17,7 +17,8 @@ redis = Redis(
 )
 REDIS_FLOW_KEY = "deribit_flow_24h_history"
 REDIS_OI_MIGRATION_KEY = "deribit_oi_hourly_history"
-MAX_HISTORY_POINTS = 3500
+REDIS_NET_GEX_24H_KEY = "deribit_net_gex_24h_history"
+MAX_HISTORY_POINTS = 3500 
 
 # Keep track of the previous ATM IV to find live volatility direction velocity
 last_known_atm_iv = [50.0] 
@@ -79,45 +80,59 @@ def background_data_worker(currency="BTC"):
 
             opt_url = f"https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency={currency}&kind=option"
             opt_res = requests.get(opt_url).json()
-            data_list = opt_res['result']
+            data_list = opt_res['result'] 
 
             now = datetime.now(timezone.utc)
             parsed_options = []
             atm_iv = 50.0
-            min_strike_dist = float('inf')
+            min_strike_dist = float('inf') 
 
             for item in data_list:
                 name = item['instrument_name']
                 parts = name.split('-')
-                if len(parts) < 4: continue 
+                if len(parts) < 4: continue
                 strike = float(parts[2])
                 oi = float(item.get('open_interest', 0))
                 if oi <= 0: continue
                 expiry_str = parts[1]
+                option_type = parts[3]
                 try:
                     expiry_dt = datetime.strptime(expiry_str, "%d%b%y").replace(tzinfo=timezone.utc).replace(hour=8, minute=0, second=0)
                     days_to_expiry = (expiry_dt - now).total_seconds() / 86400.0
                     if days_to_expiry < 0: continue
-                except Exception: continue
-                
+                except Exception: continue 
+
                 iv = float(item.get('mark_iv', 50)) / 100.0
-                if iv == 0: iv = 0.5 
+                if iv == 0: iv = 0.5
                 if days_to_expiry <= 7.0:
                     dist = abs(spot_price - strike)
                     if dist < min_strike_dist:
                         min_strike_dist = dist
                         atm_iv = iv * 100.0 
 
-                parsed_options.append({'strike': strike, 'oi': oi, 'days_to_expiry': days_to_expiry})
+                # Structural pre-calculated mapping pipeline parameters
+                try:
+                    t_days = max(days_to_expiry, 0.01) / 365.0
+                    distance = abs(math.log(spot_price / strike))
+                    approx_gamma = (1.0 / (iv * math.sqrt(t_days) * math.sqrt(2 * math.pi))) * math.exp(-0.5 * (distance / (iv * math.sqrt(t_days)))**2) / spot_price
+                    gex_val = oi * approx_gamma * (spot_price ** 2) * 0.01
+                    if option_type == 'P': gex_val = -gex_val
+                except Exception:
+                    gex_val = 0.0
+
+                parsed_options.append({'strike': strike, 'oi': oi, 'days_to_expiry': days_to_expiry, 'type': option_type, 'gex': gex_val}) 
 
             net_call_fiat_flow = 0.0
             net_put_fiat_flow = 0.0
-            net_delta_premium_drift = 0.0
+            net_delta_premium_drift = 0.0 
 
             call_ask_hit_premium = 0.0
             call_bid_hit_premium = 0.0
             put_ask_hit_premium = 0.0
             put_bid_hit_premium = 0.0 
+
+            for trade in data_list:
+                pass
 
             trades_url = f"https://www.deribit.com/api/v2/public/get_last_trades_by_currency?currency={currency}&kind=option&count=1000"
             trades_res = requests.get(trades_url).json()
@@ -129,20 +144,20 @@ def background_data_worker(currency="BTC"):
                 if last_logged_element:
                     last_processed_id = json.loads(last_logged_element).get("last_trade_id")
             except Exception as e:
-                print(f"Error fetching last process state: {e}")
+                print(f"Error fetching last process state: {e}") 
 
-            incoming_ids = [str(t.get('trade_id', '')) for t in trades_list]
-            
+            incoming_ids = [str(t.get('trade_id', '')) for t in trades_list] 
+
             slice_index = None
             if last_processed_id and last_processed_id in incoming_ids:
-                slice_index = incoming_ids.index(last_processed_id)
-                
+                slice_index = incoming_ids.index(last_processed_id) 
+
             if slice_index is not None:
                 active_trades_subset = trades_list[:slice_index]
             else:
-                active_trades_subset = trades_list
+                active_trades_subset = trades_list 
 
-            new_most_recent_id = str(trades_list[0].get('trade_id', '')) if trades_list else last_processed_id
+            new_most_recent_id = str(trades_list[0].get('trade_id', '')) if trades_list else last_processed_id 
 
             for trade in active_trades_subset:
                 ins_name = trade.get('instrument_name', '')
@@ -170,7 +185,7 @@ def background_data_worker(currency="BTC"):
                 except Exception: trade_delta = 0.5 if option_type == 'C' else -0.5 
 
                 trade_ndf = trade_delta * fiat_notional_value
-                if direction != 'buy': trade_ndf = -trade_ndf 
+                if direction != 'buy': trade_ndf = -trade_ndf
                 net_delta_premium_drift += trade_ndf 
 
                 if option_type == 'C':
@@ -206,7 +221,7 @@ def background_data_worker(currency="BTC"):
                     "p_bid": round(put_bid_hit_premium, 2),
                     "last_trade_id": new_most_recent_id
                 }
-                redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot))
+                redis.rpush(REDIS_FLOW_KEY, json.dumps(flow_snapshot)) 
 
             all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
             records_to_remove_count = 0
@@ -215,30 +230,54 @@ def background_data_worker(currency="BTC"):
                 rec_time = datetime.strptime(f"{now.year}-{f_data['timestamp']}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
                 if rec_time > now: rec_time = rec_time.replace(year=now.year - 1)
                 if (now - rec_time).total_seconds() > 86400.0: records_to_remove_count += 1
-            if records_to_remove_count > 0: redis.ltrim(REDIS_FLOW_KEY, records_to_remove_count, -1)
+            if records_to_remove_count > 0: redis.ltrim(REDIS_FLOW_KEY, records_to_remove_count, -1) 
 
             if now.minute <= 4:
                 hourly_time_tag = now.strftime("%m-%d %H:%M")
+                hour_string_label = now.strftime("%H") + "H"
+                
                 last_oi_element = redis.lindex(REDIS_OI_MIGRATION_KEY, -1)
                 if last_oi_element and json.loads(last_oi_element).get("timestamp") == hourly_time_tag:
                     redis.rpop(REDIS_OI_MIGRATION_KEY)
+                    
+                last_gex_element = redis.lindex(REDIS_NET_GEX_24H_KEY, -1)
+                if last_gex_element and json.loads(last_gex_element).get("timestamp") == hourly_time_tag:
+                    redis.rpop(REDIS_NET_GEX_24H_KEY)
 
                 base_df = pd.DataFrame(parsed_options)
                 oi_snapshot_map = {}
+                call_gex_3d_total = 0.0
+                put_gex_3d_total = 0.0
+
                 if not base_df.empty:
                     base_df['strike_bucket'] = base_df['strike'].apply(lambda x: round(x / 500.0) * 500)
                     oi_snapshot_map = base_df.groupby('strike_bucket')['oi'].sum().to_dict()
-                    oi_snapshot_map = {str(k): float(v) for k, v in oi_snapshot_map.items()} 
+                    oi_snapshot_map = {str(k): float(v) for k, v in oi_snapshot_map.items()}
+                    
+                    df_3d_slice = base_df[base_df['days_to_expiry'] <= 3.0]
+                    call_gex_3d_total = float(df_3d_slice[df_3d_slice['gex'] > 0]['gex'].sum())
+                    put_gex_3d_total = float(df_3d_slice[df_3d_slice['gex'] < 0]['gex'].sum())
 
                 oi_history_snapshot = {"timestamp": hourly_time_tag, "oi_distribution": oi_snapshot_map}
                 redis.rpush(REDIS_OI_MIGRATION_KEY, json.dumps(oi_history_snapshot))
                 redis.ltrim(REDIS_OI_MIGRATION_KEY, -168, -1)
+                
+                # New Additional Key: Stores raw directional GEX layers dynamically
+                net_gex_history_snapshot = {
+                    "timestamp": hourly_time_tag,
+                    "hour_label": hour_string_label,
+                    "net_gex": round(call_gex_3d_total + put_gex_3d_total, 2),
+                    "call_gex": round(call_gex_3d_total, 2),
+                    "put_gex": round(put_gex_3d_total, 2)
+                }
+                redis.rpush(REDIS_NET_GEX_24H_KEY, json.dumps(net_gex_history_snapshot))
+                redis.ltrim(REDIS_NET_GEX_24H_KEY, -24, -1)
 
             print("Background state sync complete.")
         except Exception as loop_ex:
-            print(f"Background Loop Error encountered: {loop_ex}")
-            
-        time.sleep(300)
+            print(f"Background Loop Error encountered: {loop_ex}") 
+
+        time.sleep(300) 
 
 def fetch_deribit_gex(currency="BTC"):
     """Fetches and calculates current state visual metrics exclusively for chart render steps."""
@@ -255,7 +294,7 @@ def fetch_deribit_gex(currency="BTC"):
     now = datetime.now(timezone.utc)
     parsed_options = []
     atm_iv = 50.0
-    min_strike_dist = float('inf')
+    min_strike_dist = float('inf') 
 
     net_speed_current = 0.0
     net_speed_down_1000 = 0.0
@@ -304,9 +343,9 @@ def fetch_deribit_gex(currency="BTC"):
             approx_gamma = 0.0001 / max(1.0, abs(spot_price - strike))
             vanna_exposure_footprint = 0.0 
 
-        gex_value = oi * approx_gamma * (spot_price ** 2) * 0.01 
+        gex_value = oi * approx_gamma * (spot_price ** 2) * 0.01
         if option_type == 'P':
-            gex_value = -gex_value
+            gex_value = -gex_value 
 
         net_speed_current += calculate_speed_for_option(spot_price, strike, iv, days_to_expiry, oi, option_type)
         net_speed_down_1000 += calculate_speed_for_option(spot_price - 1000.0, strike, iv, days_to_expiry, oi, option_type)
@@ -326,7 +365,7 @@ def fetch_deribit_gex(currency="BTC"):
 
     iv_shift_multiplier = 1.0
     if len(last_known_atm_iv) > 0:
-        if atm_iv < last_known_atm_iv[-1]: iv_shift_multiplier = -1.0 
+        if atm_iv < last_known_atm_iv[-1]: iv_shift_multiplier = -1.0
     last_known_atm_iv.append(atm_iv)
     if len(last_known_atm_iv) > 20: last_known_atm_iv.pop(0) 
 
@@ -358,13 +397,13 @@ def fetch_deribit_gex(currency="BTC"):
     skew_25d_val = 0.0
     if not df_7d.empty:
         calls_7d = df_7d[df_7d['type'] == 'C']
-        puts_7d = df_7d[df_7d['type'] == 'P']
-        
+        puts_7d = df_7d[df_7d['type'] == 'P'] 
+
         c_idx = (calls_7d['strike'] - spot_price * 1.05).abs().idxmin() if not calls_7d.empty else None
-        p_idx = (puts_7d['strike'] - spot_price * 0.95).abs().idxmin() if not puts_7d.empty else None
-        
+        p_idx = (puts_7d['strike'] - spot_price * 0.95).abs().idxmin() if not puts_7d.empty else None 
+
         if c_idx is not None and p_idx is not None:
-            skew_25d_val = float(puts_7d.loc[p_idx, 'iv'] - calls_7d.loc[c_idx, 'iv'])
+            skew_25d_val = float(puts_7d.loc[p_idx, 'iv'] - calls_7d.loc[c_idx, 'iv']) 
 
     strikes_3d = sorted(df_3d['strike'].unique())
     min_pain = float('inf')
@@ -401,17 +440,17 @@ def fetch_deribit_gex(currency="BTC"):
         all_flow_records = redis.lrange(REDIS_FLOW_KEY, 0, -1)
         for record in all_flow_records:
             valid_flow_records.append(json.loads(record))
-    except Exception: pass
+    except Exception: pass 
 
     total_accumulated_call_flow = sum(f["call_flow"] for f in valid_flow_records) if valid_flow_records else 0.0
     total_accumulated_put_flow = sum(f["put_flow"] for f in valid_flow_records) if valid_flow_records else 0.0
-    net_flow_bias = total_accumulated_call_flow - total_accumulated_put_flow 
+    net_flow_bias = total_accumulated_call_flow - total_accumulated_put_flow
     total_cumulative_ndf_drift = sum(f.get("ndf_drift", 0.0) for f in valid_flow_records) if valid_flow_records else 0.0 
 
     total_c_ask = sum(f.get("c_ask", 0.0) for f in valid_flow_records) if valid_flow_records else 0.0
     total_c_bid = sum(f.get("c_bid", 0.0) for f in valid_flow_records) if valid_flow_records else 0.0
     total_p_ask = sum(f.get("p_ask", 0.0) for f in valid_flow_records) if valid_flow_records else 0.0
-    total_p_bid = sum(f.get("p_bid", 0.0) for f in valid_flow_records) if valid_flow_records else 0.0
+    total_p_bid = sum(f.get("p_bid", 0.0) for f in valid_flow_records) if valid_flow_records else 0.0 
 
     center_spot_500 = round(spot_price / 500.0) * 500
     lower_bound = center_spot_500 - 6000
@@ -423,10 +462,10 @@ def fetch_deribit_gex(currency="BTC"):
     bucket_data_3d = df_chart_range_3d.groupby('strike_bucket').agg({'gex': 'sum'}) 
 
     df_calls_3d = df_3d_copy[(df_3d_copy['type'] == 'C') & (df_3d_copy['strike'] >= lower_bound) & (df_3d_copy['strike'] <= upper_bound)]
-    df_puts_3d = df_3d_copy[(df_3d_copy['type'] == 'P') & (df_3d_copy['strike'] >= lower_bound) & (df_3d_copy['strike'] <= upper_bound)]
-    
+    df_puts_3d = df_3d_copy[(df_3d_copy['type'] == 'P') & (df_3d_copy['strike'] >= lower_bound) & (df_3d_copy['strike'] <= upper_bound)] 
+
     bucket_calls_3d = df_calls_3d.groupby('macro_bucket')['oi'].sum()
-    bucket_puts_3d = df_puts_3d.groupby('macro_bucket')['oi'].sum()
+    bucket_puts_3d = df_puts_3d.groupby('macro_bucket')['oi'].sum() 
 
     df_chart_range_1m = base_df[base_df['days_to_expiry'] <= 30.0][(base_df['strike'] >= lower_bound) & (base_df['strike'] <= upper_bound)].copy()
     df_chart_range_1m['strike_bucket'] = df_chart_range_1m['strike'].apply(lambda x: round(x / 500.0) * 500)
@@ -444,9 +483,9 @@ def fetch_deribit_gex(currency="BTC"):
         gex_1m_val = bucket_data_1m['gex'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
         vanna_val = bucket_data_1m['vanna'].get(b_strike, 0.0) if b_strike in bucket_data_1m.index else 0.0
         iv_skew_val = bucket_iv_map.get(b_strike, 0.0) 
-        
+
         calls_oi_3d = bucket_calls_3d.get(b_strike, 0.0)
-        puts_oi_3d = bucket_puts_3d.get(b_strike, 0.0)
+        puts_oi_3d = bucket_puts_3d.get(b_strike, 0.0) 
 
         chart_matrix.append({
             "index": idx, "strike": b_strike,
@@ -455,8 +494,8 @@ def fetch_deribit_gex(currency="BTC"):
             "calls_oi_3d": calls_oi_3d, "puts_oi_3d": puts_oi_3d
         }) 
 
-    total_oi_global = base_df['oi'].sum() if not base_df.empty else 1.0
-    
+    total_oi_global = base_df['oi'].sum() if not base_df.empty else 1.0 
+
     def calculate_expiry_slice_metrics(df, min_d, max_d):
         slice_df = df[(df['days_to_expiry'] >= min_d) & (df['days_to_expiry'] <= max_d)]
         if slice_df.empty:
@@ -465,14 +504,21 @@ def fetch_deribit_gex(currency="BTC"):
         c_oi = slice_df[slice_df['type'] == 'C']['oi'].sum()
         p_oi = slice_df[slice_df['type'] == 'P']['oi'].sum()
         ratio = (c_oi / p_oi) if p_oi > 0 else (c_oi if c_oi > 0 else 1.0)
-        return share, ratio
+        return share, ratio 
 
-    # Consolidated 3DTE slice to encapsulate all options up to and including 3 days
     s_3d, r_3d = calculate_expiry_slice_metrics(base_df, 0.0, 3.0)
-    # 1MTE remains custom tracking the range from 3 days down up to 1 calendar month
-    s_1m, r_1m = calculate_expiry_slice_metrics(base_df, 3.0001, 31.0)
+    s_1m, r_1m = calculate_expiry_slice_metrics(base_df, 3.0001, 31.0) 
 
-    realized_vol_10d_val = calculate_realized_vol_10d(currency) 
+    realized_vol_10d_val = calculate_realized_vol_10d(currency)
+    
+    # Extract structural pre-calculated rolling yellow bar indicators
+    net_gex_24h_payload = []
+    try:
+        raw_gex_records = redis.lrange(REDIS_NET_GEX_24H_KEY, 0, -1)
+        for record in raw_gex_records:
+            net_gex_24h_payload.append(json.loads(record))
+    except Exception: pass
+
     return {
         "spot": spot_price,
         "call_gex_1m": call_gex_1m, "put_gex_1m": put_gex_1m, "net_gex_1m": net_gex_1m, "call_weight_1m": call_weight_pct_1m,
@@ -480,7 +526,7 @@ def fetch_deribit_gex(currency="BTC"):
         "max_pain": max_pain_level, "flip": flip_level, "breakout": breakout_price,
         "resistance": resistance_level, "support": support_level, "call_inflow": total_accumulated_call_flow,
         "put_inflow": total_accumulated_put_flow, "net_flow": net_flow_bias, "chart_data": chart_matrix,
-        "skew_25d": skew_25d_val, 
+        "skew_25d": skew_25d_val,
         "c1_wall": c1_level, "c2_wall": c2_level, "p1_wall": p1_level, "p2_wall": p2_level,
         "implied_vol": atm_iv, "realized_vol": realized_vol_10d_val,
         "ndf_drift_total": total_cumulative_ndf_drift,
@@ -491,7 +537,8 @@ def fetch_deribit_gex(currency="BTC"):
         "raw_option_dataframe": bucket_data_1m,
         "expiry_profile": {
             "3d": (s_3d, r_3d), "1m": (s_1m, r_1m)
-        }
+        },
+        "net_gex_24h_history": net_gex_24h_payload
     } 
 
 def fmt_gex(val):
@@ -510,6 +557,8 @@ def main(page: ft.Page):
     page.padding = 14 
 
     net_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
+    net_gex_24h_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
+    net_gex_24h_left_axis = ft.ChartAxis(labels=[], labels_size=42)
     calls_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
     puts_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
@@ -538,11 +587,10 @@ def main(page: ft.Page):
     res_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.PURPLE_300)
     sup_txt = ft.Text("$0.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.PINK_400) 
 
-    # Cleaned Text Instance Fields for the 3-column / 3-row layout structure
     p3_share = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
     p3_ratio = ft.Text("1.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_GREY_300)
     pm_share = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
-    pm_ratio = ft.Text("1.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_GREY_300)
+    pm_ratio = ft.Text("1.00", size=14, weight=ft.FontWeight.W_600, color=ft.colors.BLUE_GREY_300) 
 
     inflows_call_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
     outflows_put_txt = ft.Text("0.0M", size=14, weight=ft.FontWeight.W_600)
@@ -558,7 +606,7 @@ def main(page: ft.Page):
     rv_metric_txt = ft.Text("0.0%", size=14, weight=ft.FontWeight.W_600)
     vol_variance_txt = ft.Text("0.0% (Neutral)", size=14, weight=ft.FontWeight.BOLD) 
 
-    grid_lines_config = ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5)
+    grid_lines_config = ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5) 
 
     speed_curr_txt = ft.Text("0.00", size=14, weight=ft.FontWeight.W_600)
     speed_down_txt = ft.Text("0.00", size=14, weight=ft.FontWeight.W_600)
@@ -572,17 +620,24 @@ def main(page: ft.Page):
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240) 
 
+    # Newly Designed 24H Net GEX Rolling Profile Yellow Bar Engine
+    net_gex_24h_bar_chart = ft.BarChart(
+        bar_groups=[], bottom_axis=net_gex_24h_bottom_axis, left_axis=net_gex_24h_left_axis,
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=50000000.0),
+        vertical_grid_lines=grid_lines_config, animate=True, interactive=True, height=240
+    )
+
     calls_oi_chart_3d = ft.BarChart(
         bar_groups=[], bottom_axis=calls_axis_3d,
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240, min_y=0
-    )
+    ) 
 
     puts_oi_chart_3d = ft.BarChart(
         bar_groups=[], bottom_axis=puts_axis_3d,
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240, min_y=0
-    )
+    ) 
 
     gex_bar_chart_1m = ft.BarChart(
         bar_groups=[], bottom_axis=net_axis_1m,
@@ -662,12 +717,11 @@ def main(page: ft.Page):
             res_txt.value = f"${m['resistance']:,.0f}"
             sup_txt.value = f"${m['support']:,.0f}" 
 
-            # Live mapping from backend payload array indices
             ep = m['expiry_profile']
             p3_share.value = f"{ep['3d'][0]:.2f}%"
             p3_ratio.value = f"{ep['3d'][1]:.2f}"
             pm_share.value = f"{ep['1m'][0]:.2f}%"
-            pm_ratio.value = f"{ep['1m'][1]:.2f}"
+            pm_ratio.value = f"{ep['1m'][1]:.2f}" 
 
             sk_val = m['skew_25d']
             if sk_val > 0.5:
@@ -755,7 +809,7 @@ def main(page: ft.Page):
                 oi_snapshots = redis.lrange(REDIS_OI_MIGRATION_KEY, -2, -1)
                 if len(oi_snapshots) >= 2:
                     t0_data = json.loads(oi_snapshots[0]).get("oi_distribution", {})
-                    t1_data = json.loads(oi_snapshots[1]).get("oi_distribution", {}) 
+                    t1_data = json.loads(oi_snapshots[1]).get("oi_distribution", {})
                     for k_strike in t1_data.keys():
                         historical_oi_deltas[float(k_strike)] = float(t1_data[k_strike]) - float(t0_data.get(k_strike, 0.0))
             except Exception: pass 
@@ -767,33 +821,33 @@ def main(page: ft.Page):
             groups_vanna = []
             groups_oi_migration = []
             iv_bar_groups = []
-            new_labels = []
-            
+            new_labels = [] 
+
             min_dist = float('inf')
             spot_index = -1 
 
             for item in m['chart_data']:
                 dist = abs(item['strike'] - m['spot'])
-                if dist < min_dist: 
+                if dist < min_dist:
                     min_dist = dist
                     spot_index = item['index'] 
 
             max_abs_vanna_exposure = 0.0001
-            max_abs_oi_delta = 0.0001 
-            max_short_term_oi_in_view = 0.0001
+            max_abs_oi_delta = 0.0001
+            max_short_term_oi_in_view = 0.0001 
 
             for item in m['chart_data']:
-                if abs(item['vanna_exposure']) > max_abs_vanna_exposure: max_abs_vanna_exposure = abs(item['vanna_exposure']) 
+                if abs(item['vanna_exposure']) > max_abs_vanna_exposure: max_abs_vanna_exposure = abs(item['vanna_exposure'])
                 stk = item['strike']
                 oi_change = historical_oi_deltas.get(stk, 0.0)
                 if abs(oi_change) > max_abs_oi_delta: max_abs_oi_delta = abs(oi_change) 
-                
+
                 if item['calls_oi_3d'] > max_short_term_oi_in_view: max_short_term_oi_in_view = item['calls_oi_3d']
-                if item['puts_oi_3d'] > max_short_term_oi_in_view: max_short_term_oi_in_view = item['puts_oi_3d']
+                if item['puts_oi_3d'] > max_short_term_oi_in_view: max_short_term_oi_in_view = item['puts_oi_3d'] 
 
             aligned_oi_bound = max_short_term_oi_in_view * 1.15
             calls_oi_chart_3d.max_y = aligned_oi_bound
-            puts_oi_chart_3d.max_y = aligned_oi_bound
+            puts_oi_chart_3d.max_y = aligned_oi_bound 
 
             vanna_exposure_bound = max_abs_vanna_exposure * 1.15
             vanna_bar_chart.min_y = -vanna_exposure_bound
@@ -809,8 +863,8 @@ def main(page: ft.Page):
                 val_3d = item['gex_3d']
                 val_1m = item['gex_1m']
                 v_exposure = item['vanna_exposure']
-                iv_val_item = item['iv_skew']
-                
+                iv_val_item = item['iv_skew'] 
+
                 c_oi_3d = item['calls_oi_3d']
                 p_oi_3d = item['puts_oi_3d']
 
@@ -825,22 +879,58 @@ def main(page: ft.Page):
 
                 valid_ivs = [it['iv_skew'] for it in m['chart_data'] if it['iv_skew'] > 0]
                 max_iv_val = max(valid_ivs) if valid_ivs else 100.0
-                min_iv_val = min(valid_ivs) if valid_ivs else 0.0 
+                min_iv_val = min(valid_ivs) if valid_ivs else 0.0
                 floor_y = math.floor(min_iv_val / 10.0) * 10.0
                 ceil_y = math.ceil(max_iv_val / 10.0) * 10.0
-                if ceil_y == floor_y: ceil_y += 10.0 
+                if ceil_y == floor_y: ceil_y += 10.0
                 id_skew_bar_chart.min_y = floor_y
                 id_skew_bar_chart.max_y = ceil_y 
 
                 iv_bar_groups.append(ft.BarChartGroup(
                     x=item['index'],
                     bar_rods=[ft.BarChartRod(from_y=floor_y, to_y=iv_val_item if iv_val_item > 0 else floor_y, color=ft.colors.ORANGE_700, width=6, border_radius=1)]
-                ))
-                
+                )) 
+
                 if strike_val % 1000 == 0:
                     label_color = ft.colors.BLUE_200 if is_spot else ft.colors.GREY_400
-                    new_labels.append(ft.ChartAxisLabel(value=item['index'], label=ft.Text(f"{strike_val/1000:.0f}k", size=10, color=label_color, rotate=45, weight=ft.FontWeight.BOLD if is_spot else ft.FontWeight.NORMAL)))
-            
+                    new_labels.append(ft.ChartAxisLabel(value=item['index'], label=ft.Text(f"{strike_val/1000:.0f}k", size=10, color=label_color, rotate=45, weight=ft.FontWeight.BOLD if is_spot else ft.FontWeight.NORMAL))) 
+
+            # Render logic for the new yellow 24H Net GEX History chart
+            gex_24h_history_list = m.get("net_gex_24h_history", [])
+            groups_net_gex_24h = []
+            labels_gex_24h = []
+            max_abs_gex_24h = 50000000.0  # Safe initial baseline matrix standard
+
+            for idx, item in enumerate(gex_24h_history_list):
+                val_gex = item.get("net_gex", 0.0)
+                if abs(val_gex) > max_abs_gex_24h: max_abs_gex_24h = abs(val_gex)
+                
+                groups_net_gex_24h.append(ft.BarChartGroup(
+                    x=idx,
+                    bar_rods=[ft.BarChartRod(from_y=0, to_y=val_gex, color=ft.colors.YELLOW, width=12, border_radius=1)]
+                ))
+                labels_gex_24h.append(ft.ChartAxisLabel(
+                    value=idx,
+                    label=ft.Text(item.get("hour_label", "00H"), size=9, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
+                ))
+
+            bound_gex_24h = math.ceil(max_abs_gex_24h / 50000000.0) * 50000000.0
+            net_gex_24h_bar_chart.min_y = -bound_gex_24h
+            net_gex_24h_bar_chart.max_y = bound_gex_24h
+            net_gex_24h_bar_chart.bar_groups = groups_net_gex_24h
+            net_gex_24h_bottom_axis.labels = labels_gex_24h
+
+            # Generate dynamic labels for left-side micro-grid layout scaled to millions (M)
+            left_labels_24h = []
+            y_ticks_count = int(bound_gex_24h / 50000000.0)
+            for step in range(-y_ticks_count, y_ticks_count + 1):
+                tick_val = step * 50000000.0
+                left_labels_24h.append(ft.ChartAxisLabel(
+                    value=tick_val,
+                    label=ft.Text(f"{tick_val / 1000000.0:,.0f}M", size=9, color=ft.colors.GREY_500)
+                ))
+            net_gex_24h_left_axis.labels = left_labels_24h
+
             gex_bar_chart_3d.bar_groups = groups_net_3d
             net_axis_3d.labels = new_labels
             calls_oi_chart_3d.bar_groups = groups_calls_3d
@@ -854,27 +944,30 @@ def main(page: ft.Page):
             oi_migration_bar_chart.bar_groups = groups_oi_migration
             oi_migration_bottom_axis.labels = list(new_labels)
             id_skew_bar_chart.bar_groups = iv_bar_groups
-            iv_bottom_axis.labels = list(new_labels)
-            
-            page.update()
+            iv_bottom_axis.labels = list(new_labels) 
+
+            page.update() 
 
     page.add(
         ft.Row([ft.Text("DERIBIT GEX DASHBOARD", size=20, weight=ft.FontWeight.BOLD)], alignment=ft.MainAxisAlignment.START),
-        ft.Card(content=ft.Container(content=ft.Row([ft.Text("Bitcoin Spot Price", size=11, color=ft.colors.GREY_500), spot_price_container], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)),
-        
+        ft.Card(content=ft.Container(content=ft.Row([ft.Text("Bitcoin Spot Price", size=11, color=ft.colors.GREY_500), spot_price_container], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=12)), 
+
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (3D)"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_3d)),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_3d)), 
+
+        # INSERTED: 24H NET GAMMA EXPOSURE (3D) card located right beneath the Strike GEX plot frame
+        create_section_header("24H NET GAMMA EXPOSURE (3D)"),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=net_gex_24h_bar_chart)),
 
         create_section_header("CALL OPTIONS DISTRIBUTION (3D)"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=calls_oi_chart_3d)),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=calls_oi_chart_3d)), 
 
         create_section_header("PUT OPTIONS DISTRIBUTION (3D)"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=puts_oi_chart_3d)),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=puts_oi_chart_3d)), 
 
         create_section_header("IMPORTANT LEVELS"),
-        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))),
+        ft.Card(content=ft.Container(padding=14, content=ft.Column([ui_row_item("Max Pain", pain_txt), ui_row_item("Flip Zone", flip_txt), ui_row_item("Breakout Price", breakout_txt), ui_row_item("Resistance Level", res_txt), ui_row_item("Support Level", sup_txt)]))), 
 
-        # RENAMED: MARKET SHARE + Standardized layout width block configuration
         create_section_header("MARKET SHARE"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ft.Row([
@@ -893,16 +986,16 @@ def main(page: ft.Page):
                 ft.Container(content=pm_share, expand=True, alignment=ft.alignment.center_right),
                 ft.Container(content=pm_ratio, expand=True, alignment=ft.alignment.center_right)
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-        ]))),
+        ]))), 
 
         create_section_header("NET GAMMA EXPOSURE BY STRIKE (1M)"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_1m)),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=gex_bar_chart_1m)), 
 
         create_section_header("NET VANNA EXPOSURE PROFILE (VEX)"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=vanna_bar_chart)), 
 
         create_section_header("OPEN INTEREST MIGRATION ENGINE (HOURLY DELTA)"),
-        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=oi_migration_bar_chart)),
+        ft.Card(content=ft.Container(padding=ft.padding.only(left=5, right=15, top=15, bottom=15), content=oi_migration_bar_chart)), 
 
         create_section_header("TOTAL GAMMA EXPOSURE (1M)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
@@ -911,21 +1004,21 @@ def main(page: ft.Page):
         create_section_header("TOTAL GAMMA EXPOSURE (3D)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("Call Gamma", call_gex_txt_3d), ui_row_item("Put Gamma", put_gex_txt_3d), ui_row_item("Net Gamma", net_gex_txt_3d), ui_row_item("Call Weight (%)", weight_txt_3d)
-        ]))),
-        
+        ]))), 
+
         create_section_header("IV SKEW ANALYSIS (7D)"),
         ft.Card(content=ft.Container(padding=15, content=ft.Column([
             id_skew_bar_chart,
             ft.Container(height=10),
             ui_row_item("25D Skew", skew_25d_txt)
-        ]))),
-        
+        ]))), 
+
         create_section_header("24H ACCUMULATED ORDER FLOW ANALYSIS"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
-            ui_row_item("Net Call Inflows", inflows_call_txt), 
-            ui_row_item("Net Put Inflows", outflows_put_txt), 
+            ui_row_item("Net Call Inflows", inflows_call_txt),
+            ui_row_item("Net Put Inflows", outflows_put_txt),
             ui_row_item("Net Premium Bias", net_flow_txt)
-        ]))),
+        ]))), 
 
         create_section_header("BLOCK TRADE AGGRESSOR ANALYSIS (BID vs ASK)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
@@ -934,14 +1027,14 @@ def main(page: ft.Page):
             ui_row_item("Put Aggressor Buys (Hit Ask)", put_ask_hit_txt),
             ui_row_item("Put Aggressor Sells (Hit Bid)", put_bid_hit_txt),
             ui_row_item("Net Aggressor Premium Bias", aggr_net_bias_txt)
-        ]))),
+        ]))), 
 
         create_section_header("VOLATILITY VARIANCE ANALYSIS (10D)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
             ui_row_item("Implied Volatility (IV)", iv_metric_txt),
             ui_row_item("Realized Volatility (RV)", rv_metric_txt),
             ui_row_item("IV - RV Variation", vol_variance_txt)
-        ]))),
+        ]))), 
 
         create_section_header("DEALER SPOT GAMMA ACCELERATION (SPEED)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
@@ -950,7 +1043,7 @@ def main(page: ft.Page):
             ui_row_item("Predictive Stress: Spot +$1000 Rally", speed_up_txt),
             ft.Divider(height=10, color=ft.colors.GREY_800),
             ui_row_item("Regime", speed_regime_txt)
-        ]))),
+        ]))), 
 
         create_section_header("CUMULATIVE DELTA PREMIUM DRIFT (NDF)"),
         ft.Card(content=ft.Container(padding=14, content=ft.Column([
