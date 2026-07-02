@@ -230,7 +230,8 @@ def background_data_worker(currency="BTC"):
 
             if now.minute <= 4:
                 hourly_time_tag = now.strftime("%m-%d %H:%M")
-                hour_string_label = now.strftime("%H") + "H"
+                # FIXED: Removed the 'H' suffix from the hour label structure entirely
+                hour_string_label = now.strftime("%H")
                 
                 last_oi_element = redis.lindex(REDIS_OI_MIGRATION_KEY, -1)
                 if last_oi_element and json.loads(last_oi_element).get("timestamp") == hourly_time_tag:
@@ -552,7 +553,7 @@ def main(page: ft.Page):
 
     net_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
     net_gex_24h_bottom_axis = ft.ChartAxis(labels=[], labels_size=24)
-    net_gex_24h_left_axis = ft.ChartAxis(labels=[], labels_size=0) # FIXED: Changed size to 0 to hide left axis space completely
+    net_gex_24h_left_axis = ft.ChartAxis(labels=[], labels_size=0)
     calls_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
     puts_axis_3d = ft.ChartAxis(labels=[], labels_size=24)
     net_axis_1m = ft.ChartAxis(labels=[], labels_size=24)
@@ -614,9 +615,10 @@ def main(page: ft.Page):
         horizontal_grid_lines=grid_lines_config, vertical_grid_lines=grid_lines_config,
         animate=True, interactive=True, height=240) 
 
+    # FIXED: Modifying the horizontal tracking layout interval cleanly to 20 Million steps
     net_gex_24h_bar_chart = ft.BarChart(
         bar_groups=[], bottom_axis=net_gex_24h_bottom_axis, left_axis=net_gex_24h_left_axis,
-        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=50000000.0),
+        horizontal_grid_lines=ft.ChartGridLines(color=ft.colors.GREY_800, width=0.5, interval=20000000.0),
         vertical_grid_lines=grid_lines_config, animate=True, interactive=True, height=240
     )
 
@@ -891,7 +893,7 @@ def main(page: ft.Page):
             gex_24h_history_list = m.get("net_gex_24h_history", [])
             groups_net_gex_24h = []
             labels_gex_24h = []
-            max_abs_gex_24h = 50000000.0 
+            max_abs_gex_24h = 20000000.0 
 
             for idx, item in enumerate(gex_24h_history_list):
                 val_gex = item.get("net_gex", 0.0)
@@ -903,16 +905,14 @@ def main(page: ft.Page):
                 ))
                 labels_gex_24h.append(ft.ChartAxisLabel(
                     value=idx,
-                    label=ft.Text(item.get("hour_label", "00H"), size=9, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
+                    label=ft.Text(item.get("hour_label", "00"), size=9, color=ft.colors.GREY_400, weight=ft.FontWeight.W_500)
                 ))
 
-            bound_gex_24h = math.ceil(max_abs_gex_24h / 50000000.0) * 50000000.0
+            bound_gex_24h = math.ceil(max_abs_gex_24h / 20000000.0) * 20000000.0
             net_gex_24h_bar_chart.min_y = -bound_gex_24h
             net_gex_24h_bar_chart.max_y = bound_gex_24h
             net_gex_24h_bar_chart.bar_groups = groups_net_gex_24h
             net_gex_24h_bottom_axis.labels = labels_gex_24h
-
-            # FIXED: Removed custom text mappings to keep left axis completely clean of text strings
             net_gex_24h_left_axis.labels = []
 
             gex_bar_chart_3d.bar_groups = groups_net_3d
